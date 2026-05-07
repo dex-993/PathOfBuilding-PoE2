@@ -189,6 +189,12 @@ local SkillsTabClass = newClass("SkillsTab", "UndoHandler", "ControlHost", "Cont
 		self:AddUndoState()
 		self.build.buildFlag = true
 	end)
+	self.controls.autoSortSupports = new("ButtonControl", { "LEFT", self.controls.includeInFullDPS, "RIGHT" }, { 16, 0, 100, 20 }, "Auto Sort Supports", function()
+		self:AutoSortSupports()
+	end)
+	self.controls.autoSortSupports.shown = function()
+		return self.displayGroup and self.displayGroup.source == nil
+	end
 	self.controls.groupCountLabel = new("LabelControl", { "LEFT", self.controls.includeInFullDPS, "RIGHT" }, { 16, 0, 0, 16 }, "Count:")
 	self.controls.groupCountLabel.shown = function()
 		return self.displayGroup.source ~= nil
@@ -1345,5 +1351,191 @@ function SkillsTabClass:UpdateGlobalGemCountAssignments()
 		end
 	end
 	GlobalGemAssignments["GemGroupCount"] = countSocketGroups
+end
+
+-- Auto-sort support gems by DPS contribution (highest first)
+function SkillsTabClass:AutoSortSupports()
+	local socketGroup = self.displayGroup
+	if not socketGroup or #socketGroup.gemList == 0 then
+		return
+	end
+
+	-- Identify the main skill (first gem)
+	local mainGem = socketGroup.gemList[1]
+	if not mainGem or not mainGem.gemData then
+		return
+	end
+
+	local build = self.build
+	if not build or not build.calcsTab then
+		return
+	end
+
+	-- Determine main skill's skillTypes for compatibility filtering
+	local mainSkillTypes = { }
+	local grantedEffect = mainGem.gemData.grantedEffect
+	if grantedEffect.skillTypes then
+		for k, v in pairs(grantedEffect.skillTypes) do
+			mainSkillTypes[k] = v
+		end
+	end
+
+	-- Collect compatible support gems from data.gems
+	local compatibleSupports = { }
+	for _, gemData in pairs(build.data.gems) do
+		if gemData and gemData.grantedEffect then
+			local effect = gemData.grantedEffect
+			if effect.support then
+				local compatible = true
+				-- excludeSkillTypes: main skill must not have any of these
+				if effect.excludeSkillTypes and effect.excludeSkillTypes[1] then
+					for _, et in ipairs(effect.excludeSkillTypes) do
+						if mainSkillTypes[et] then
+							compatible = false
+							break
+						end
+					end
+				end
+				-- requireSkillTypes: main skill must have at least one of these
+				if compatible and effect.requireSkillTypes and effect.requireSkillTypes[1] then
+					compatible = false
+					for _, rt in ipairs(effect.requireSkillTypes) do
+						if mainSkillTypes[rt] then
+							compatible = true
+							break
+						end
+					end
+				end
+				if compatible then
+					t_insert(compatibleSupports, {
+						gemId = gemData.id,
+						gemData = gemData,
+						effect = effect,
+					})
+				end
+			end
+		end
+	end
+
+	if #compatibleSupports == 0 then
+		return
+	end
+
+	-- Get the DPS field to use for sorting (same as gem selector)
+	local dpsField = self.sortGemsByDPSField or "CombinedDPS"
+
+	-- Get calculator function
+	local calcFunc = build.calcsTab:GetMiscCalculator()
+	if not calcFunc then
+		return
+	end
+
+	-- Helper to extract DPS from output using the same logic as GemSelectControl
+	local function getDPS(output)
+		if dpsField == "FullDPS" and output.FullDPS then
+			return output.FullDPS
+		elseif output.Minion and output.Minion.CombinedDPS then
+			return output.Minion.CombinedDPS
+		elseif output[dpsField] ~= nil then
+			return output[dpsField]
+		else
+			return output.CombinedDPS or 0
+		end
+	end
+
+	-- Save original gemList count
+	local originalCount = #socketGroup.gemList
+
+	-- Measure baseline: remove all supports (keep only main gem at position 1)
+	-- Save old gems and temporarily clear positions 2+
+	local savedGems = { }
+	for i = 2, originalCount do
+		savedGems[i] = socketGroup.gemList[i]
+		socketGroup.gemList[i] = nil
+	end
+	local baseDPS = getDPS(calcFunc(nil, true))
+
+	-- Evaluate each support (use position 2, same as CalcOutputWithThisGem)
+	for _, support in ipairs(compatibleSupports) do
+		local oldGem = socketGroup.gemList[2]
+		socketGroup.gemList[2] = {
+			gemId = support.gemId,
+			skillId = support.effect.id,
+			nameSpec = support.effect.name,
+			level = mainGem.level or 20,
+			quality = mainGem.quality or 0,
+			enabled = true,
+			gemData = support.gemData,
+		}
+		local out = calcFunc(nil, true)
+		socketGroup.gemList[2] = oldGem
+		support.dpsContribution = getDPS(out) - baseDPS
+	end
+
+	-- Restore original gemList
+	for i = 2, originalCount do
+		socketGroup.gemList[i] = savedGems[i]
+	end
+
+	-- Sort by DPS contribution, keep only positive
+	table.sort(compatibleSupports, function(a, b)
+		return (a.dpsContribution or 0) > (b.dpsContribution or 0)
+	end)
+
+	local positiveSupports = { }
+	for _, support in ipairs(compatibleSupports) do
+		if support.dpsContribution > 0 then
+			t_insert(positiveSupports, support)
+		end
+	end
+
+	-- Build final gemList: main gem + positive-contribution supports
+	local slotMax = 16
+	local numSupports = math.min(#positiveSupports, slotMax - 1)
+
+	-- Helper to get color code (from Global.lua colorCodes)
+	local function getGemColor(effect)
+		if effect.color == 1 then
+			return "^xE05030"  -- STRENGTH
+		elseif effect.color == 2 then
+			return "^x70FF70"  -- DEXTERITY
+		elseif effect.color == 3 then
+			return "^x7070FF"  -- INTELLIGENCE
+		else
+			return "^xC8C8C8"  -- NORMAL
+		end
+	end
+
+	local newGemList = {
+		{
+			gemId = mainGem.gemId,
+			skillId = mainGem.skillId,
+			nameSpec = mainGem.gemData and mainGem.gemData.name or mainGem.nameSpec or "",
+			level = mainGem.level,
+			quality = mainGem.quality,
+			enabled = true,
+			gemData = mainGem.gemData,
+			color = getGemColor(mainGem.gemData and mainGem.gemData.grantedEffect or {}),
+		},
+	}
+	for i = 1, numSupports do
+		local support = positiveSupports[i]
+		local gemName = support.gemData and support.gemData.name or support.effect.name or ""
+		t_insert(newGemList, {
+			gemId = support.gemId,
+			skillId = support.effect.id,
+			nameSpec = gemName,
+			level = mainGem.level or 20,
+			quality = mainGem.quality or 0,
+			enabled = true,
+			gemData = support.gemData,
+			color = getGemColor(support.effect),
+		})
+	end
+
+	socketGroup.gemList = newGemList
+	self.build.buildFlag = true
+	self:AddUndoState()
+	self:UpdateGemSlots()
 end
 
