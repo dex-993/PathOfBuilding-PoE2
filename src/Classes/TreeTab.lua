@@ -265,6 +265,21 @@ local TreeTabClass = newClass("TreeTab", "ControlHost", function(self, build)
 		self.controls.powerReportList.shown = not self.controls.powerReportList.shown
 	end)
 
+	-- Auto Allocate Tree Button
+	self.controls.autoAllocate = new("ButtonControl", { "LEFT", self.controls.powerReport, "RIGHT" }, { 8, 0, 140, 20 }, "Auto Allocate Tree", function()
+		self:AutoAllocateTree()
+	end)
+
+	-- Remove Worst Node Button
+	self.controls.removeWorstNode = new("ButtonControl", { "LEFT", self.controls.autoAllocate, "RIGHT" }, { 8, 0, 140, 20 }, "Remove Worst Node", function()
+		self:RemoveWorstAllocatedNode()
+	end)
+
+	-- Auto Allocate Jewels Button
+	self.controls.autoAllocateJewels = new("ButtonControl", { "LEFT", self.controls.removeWorstNode, "RIGHT" }, { 8, 0, 140, 20 }, "Auto Allocate Jewels", function()
+		self:AutoAllocateJewels()
+	end)
+
 	-- Power Report List
 	local yPos = self.controls.treeHeatMap.y == 0 and self.controls.specSelect.height + 4 or self.controls.specSelect.height * 2 + 8
 	self.controls.powerReportList = new("PowerReportListControl", { "TOPLEFT", self.controls.specSelect, "BOTTOMLEFT" }, { 0, yPos, 700, 170 }, function(selectedNode)
@@ -472,6 +487,23 @@ function TreeTabClass:Draw(viewPort, inputEvents)
 	-- let white lines overwrite the black sections, regardless of showConvert
 	SetDrawColor(0.85, 0.85, 0.85)
 	DrawImage(nil, viewPort.x, viewPort.y + viewPort.height - (32 + bottomDrawerHeight + linesHeight), viewPort.width, 4)
+
+	-- Resume auto-allocate coroutine and manage button states
+	local progress = self.build.autoAllocateProgress
+	if self.build.autoAllocateBuilder then
+		self:ResumeAutoAllocate()
+		self.controls.autoAllocate.enabled = false
+		self.controls.autoAllocate.label = progress or "Working..."
+		if IsKeyDown("ESCAPE") and self.build.autoAllocateBuilder then
+			self.build.autoAllocateProgress = nil
+			self.build.autoAllocateBuilder = nil
+			self.controls.autoAllocate.enabled = true
+			self.controls.autoAllocate.label = "Auto Allocate Tree"
+		end
+	else
+		self.controls.autoAllocate.enabled = true
+		self.controls.autoAllocate.label = "Auto Allocate Tree"
+	end
 
 	self:DrawControls(viewPort)
 end
@@ -2355,4 +2387,246 @@ function TreeTabClass:FindTimelessJewel()
 	end)
 
 	main:OpenPopup(910, 517, "Find a Timeless Jewel", controls)
+end
+
+
+-- Auto Allocate Tree
+function TreeTabClass:AutoAllocateTree()
+	local spec = self.build.spec
+	local candidateCount = 0
+	for nodeId, node in pairs(spec.nodes) do
+		if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" then
+			candidateCount = candidateCount + 1
+		end
+	end
+	self:AutoAllocateTreeConfirmed(candidateCount)
+end
+
+function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
+	if candidateCount == 0 then return end
+	if self.build.autoAllocateBuilder then return end
+	main:ClosePopup()
+	self.build.autoAllocateProgress = "Starting..."
+	self.build.autoAllocateBuilder = coroutine.create(function()
+		local spec = self.build.spec
+
+		local origNormal = 0
+		for _, node in pairs(spec.allocNodes) do
+			if node.type ~= "ClassStart" and node.type ~= "AscendClassStart"
+			   and node.isFreeAllocate == nil and not node.ascendancyName then
+				origNormal = origNormal + 1
+			end
+		end
+		self.build.autoAllocateProgress = string.format(
+			"Level %d, %d points available...", self.build.characterLevel, origNormal)
+		coroutine.yield()
+
+		wipeTable(spec.hashOverrides)
+		spec:ResetNodes()
+		spec:BuildAllDependsAndPaths()
+
+		local calcFunc = self.build.calcsTab:GetMiscCalculator()
+		local baseOutput = calcFunc({ }, false)
+		local emptyTreeDamage = baseOutput.AverageDamage or 0
+
+		local cache = { }
+		local candidates = { }
+		local nodeIndex = 0
+		local yieldEvery = 5
+
+		for nodeId, node in pairs(spec.nodes) do
+			if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" then
+				if not cache[node.modKey] then
+					cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+				end
+				local power = (cache[node.modKey].AverageDamage or 0) - emptyTreeDamage
+				t_insert(candidates, { node = node, power = power, modKey = node.modKey })
+			end
+			nodeIndex = nodeIndex + 1
+			if nodeIndex % yieldEvery == 0 then
+				local pct = m_floor(nodeIndex / candidateCount * 100)
+				self.build.autoAllocateProgress = string.format(
+					"Phase 1: Evaluating nodes... %d / %d nodes (%d%%)", nodeIndex, candidateCount, pct)
+				coroutine.yield()
+			end
+		end
+
+		t_sort(candidates, function(a, b) return a.power > b.power end)
+
+		local positivePowerCount = 0
+		for _, c in ipairs(candidates) do
+			if c.power > 0 then positivePowerCount = positivePowerCount + 1 end
+		end
+
+		self.build.autoAllocateProgress = string.format(
+			"Phase 2: candidates=%d positivePower=%d", #candidates, positivePowerCount)
+		coroutine.yield()
+
+		local allocated = { }
+		local allocatedModKeys = { }
+		local pointsUsed = 0
+
+		for i = 1, math.min(origNormal, #candidates) do
+			local cand = candidates[i]
+			if cand.power <= 0 then break end
+			if not allocatedModKeys[cand.modKey] then
+				local newNodes = 0
+				if #cand.node.intuitiveLeapLikesAffecting > 0 then
+					local n = cand.node
+					if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+						newNodes = 1
+					end
+				else
+					for _, pathNode in ipairs(cand.node.path) do
+						local n = pathNode
+						if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+							newNodes = newNodes + 1
+						end
+					end
+				end
+				if pointsUsed + newNodes > origNormal then break end
+				spec:AllocNode(cand.node)
+				pointsUsed = pointsUsed + newNodes
+				t_insert(allocated, { node = cand.node, points = newNodes })
+				allocatedModKeys[cand.modKey] = true
+				if pointsUsed % 10 == 0 then
+					self.build.autoAllocateProgress = string.format(
+						"Phase 2: Allocating... %d / %d", pointsUsed, origNormal)
+					coroutine.yield()
+				end
+			end
+		end
+
+		spec:BuildAllDependsAndPaths()
+		spec:AddUndoState()
+		self.build.buildFlag = true
+
+		-- Phase 3: Fine-tune
+		local currentDamage = calcFunc({ }, false).AverageDamage or 0
+		self.build.autoAllocateProgress = string.format(
+			"Phase 3: Fine-tuning %d nodes...", #allocated)
+		coroutine.yield()
+
+		for _, entry in ipairs(allocated) do
+			local node = entry.node
+			if node.alloc then
+				spec:DeallocNode(node)
+				spec:BuildAllDependsAndPaths()
+				local newDamage = calcFunc({ }, false).AverageDamage or 0
+				if newDamage >= currentDamage then
+					currentDamage = newDamage
+				else
+					spec:AllocNode(node)
+					spec:BuildAllDependsAndPaths()
+					currentDamage = calcFunc({ }, false).AverageDamage or 0
+				end
+			end
+			if node.id % 20 == 0 then
+				self.build.autoAllocateProgress = string.format(
+					"Phase 3: Fine-tuning... (node %d)", node.id)
+				coroutine.yield()
+			end
+		end
+
+		spec:AddUndoState()
+		self.build.buildFlag = true
+		self.build.autoAllocateProgress = "Auto allocation complete!"
+		coroutine.yield()
+		self.build.autoAllocateProgress = nil
+		self.build.autoAllocateBuilder = nil
+	end)
+end
+
+function TreeTabClass:ResumeAutoAllocate()
+	local builder = self.build.autoAllocateBuilder
+	if builder and coroutine.status(builder) ~= "dead" then
+		local res, errMsg = coroutine.resume(builder)
+		if not res then error(errMsg) end
+		if coroutine.status(builder) == "dead" then
+			self.controls.autoAllocate.enabled = true
+			self.controls.autoAllocate.label = "Auto Allocate Tree"
+			self.build.autoAllocateProgress = nil
+			self.build.autoAllocateBuilder = nil
+		end
+	end
+end
+
+-- Remove the allocated node that contributes the least to AverageDamage
+function TreeTabClass:RemoveWorstAllocatedNode()
+	if self.build.autoAllocateBuilder then return end
+
+	local spec = self.build.spec
+	local calcFunc = self.build.calcsTab:GetMiscCalculator()
+	local currentDamage = calcFunc({ }, false).AverageDamage or 0
+
+	local testNodes = { }
+	for nodeId, node in pairs(spec.allocNodes) do
+		if node.type ~= "ClassStart" and node.type ~= "AscendClassStart"
+		   and node.isFreeAllocate == nil and not node.ascendancyName then
+			t_insert(testNodes, node)
+		end
+	end
+
+	if #testNodes == 0 then return end
+
+	local allocSnapshot = { }
+	for id, node in pairs(spec.allocNodes) do
+		allocSnapshot[id] = node.alloc
+	end
+	local hashSnapshot = { }
+	for id, node in pairs(spec.hashOverrides) do
+		hashSnapshot[id] = node
+	end
+
+	local worstNode = nil
+	local smallestDelta = math.huge
+
+	for _, node in ipairs(testNodes) do
+		for id, alloced in pairs(allocSnapshot) do
+			local n = spec.nodes[id]
+			if n then
+				n.alloc = alloced
+				spec.allocNodes[id] = alloced and n or nil
+			end
+		end
+		for id, attrNode in pairs(hashSnapshot) do
+			spec.hashOverrides[id] = attrNode
+		end
+		spec:BuildAllDependsAndPaths()
+
+		spec:DeallocSingleNode(node)
+		spec:BuildAllDependsAndPaths()
+		local newDamage = calcFunc({ }, false).AverageDamage or 0
+		local delta = currentDamage - newDamage
+
+		if delta < smallestDelta then
+			smallestDelta = delta
+			worstNode = node
+		end
+	end
+
+	if worstNode then
+		for id, alloced in pairs(allocSnapshot) do
+			local n = spec.nodes[id]
+			if n then
+				n.alloc = alloced
+				spec.allocNodes[id] = alloced and n or nil
+			end
+		end
+		for id, attrNode in pairs(hashSnapshot) do
+			spec.hashOverrides[id] = attrNode
+		end
+		spec:BuildAllDependsAndPaths()
+
+		spec:DeallocSingleNode(worstNode)
+		spec:BuildAllDependsAndPaths()
+
+		spec:AddUndoState()
+		self.build.buildFlag = true
+	end
+end
+
+-- Auto Allocate Jewels (placeholder)
+function TreeTabClass:AutoAllocateJewels()
+	-- TODO: implement jewel optimization
 end
