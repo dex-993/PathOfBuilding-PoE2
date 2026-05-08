@@ -266,19 +266,20 @@ local TreeTabClass = newClass("TreeTab", "ControlHost", function(self, build)
 	end)
 
 	-- Auto Allocate Tree Button
-	self.controls.autoAllocate = new("ButtonControl", { "LEFT", self.controls.powerReport, "RIGHT" }, { 8, 0, 140, 20 }, "Auto Allocate Tree", function()
+	self.controls.autoAllocate = new("ButtonControl", { "LEFT", self.controls.powerReport, "RIGHT" }, { 8, 0, 100, 20 }, "Auto Allocate Tree", function()
 		self:AutoAllocateTree()
 	end)
 
 	-- Remove Worst Node Button
-	self.controls.removeWorstNode = new("ButtonControl", { "LEFT", self.controls.autoAllocate, "RIGHT" }, { 8, 0, 140, 20 }, "Remove Worst Node", function()
+	self.controls.removeWorstNode = new("ButtonControl", { "LEFT", self.controls.autoAllocate, "RIGHT" }, { 8, 0, 100, 20 }, "Remove Worst Node", function()
 		self:RemoveWorstAllocatedNode()
 	end)
 
 	-- Auto Allocate Jewels Button
-	self.controls.autoAllocateJewels = new("ButtonControl", { "LEFT", self.controls.removeWorstNode, "RIGHT" }, { 8, 0, 140, 20 }, "Auto Allocate Jewels", function()
+	self.controls.autoAllocateJewels = new("ButtonControl", { "LEFT", self.controls.removeWorstNode, "RIGHT" }, { 8, 0, 100, 20 }, "Auto Allocate Jewels", function()
 		self:AutoAllocateJewels()
 	end)
+
 
 	-- Power Report List
 	local yPos = self.controls.treeHeatMap.y == 0 and self.controls.specSelect.height + 4 or self.controls.specSelect.height * 2 + 8
@@ -407,8 +408,11 @@ function TreeTabClass:Draw(viewPort, inputEvents)
 									+ self.controls.treeHeatMap.width + 130
 									+ self.controls.nodePowerMaxDepthSelect.width + self.controls.nodePowerMaxDepthSelect.x
 									+ (self.isCustomMaxDepth and (self.controls.nodePowerMaxDepthCustom.width + self.controls.nodePowerMaxDepthCustom.x) or 0)
-									+ (self.viewer.showHeatMap and (self.controls.treeHeatMapStatSelect.width + self.controls.treeHeatMapStatSelect.x 
-																	+ self.controls.powerReport.width + self.controls.powerReport.x) or 0)
+									+ (self.viewer.showHeatMap and (self.controls.treeHeatMapStatSelect.width + self.controls.treeHeatMapStatSelect.x
+																					+ self.controls.powerReport.width + self.controls.powerReport.x) or 0)
+									+ self.controls.autoAllocate.width + self.controls.autoAllocate.x
+									+ self.controls.removeWorstNode.width + self.controls.removeWorstNode.x
+									+ self.controls.autoAllocateJewels.width + self.controls.autoAllocateJewels.x
 	
 	-- Check first line
 	if viewPort.width >= widthFirstLineControls + widthSecondLineControls + rightMargin then
@@ -504,6 +508,24 @@ function TreeTabClass:Draw(viewPort, inputEvents)
 		self.controls.autoAllocate.enabled = true
 		self.controls.autoAllocate.label = "Auto Allocate Tree"
 	end
+
+	-- Resume auto-allocate jewels coroutine
+	local jewelsProgress = self.build.autoAllocateJewelsProgress
+	if self.build.autoAllocateJewelsBuilder then
+		self:ResumeAutoAllocateJewels()
+		self.controls.autoAllocateJewels.enabled = false
+		self.controls.autoAllocateJewels.label = jewelsProgress or "Working..."
+		if IsKeyDown("ESCAPE") and self.build.autoAllocateJewelsBuilder then
+			self.build.autoAllocateJewelsProgress = nil
+			self.build.autoAllocateJewelsBuilder = nil
+			self.controls.autoAllocateJewels.enabled = true
+			self.controls.autoAllocateJewels.label = "Auto Allocate Jewels"
+		end
+	else
+		self.controls.autoAllocateJewels.enabled = true
+		self.controls.autoAllocateJewels.label = "Auto Allocate Jewels"
+	end
+
 
 	self:DrawControls(viewPort)
 end
@@ -2626,7 +2648,1306 @@ function TreeTabClass:RemoveWorstAllocatedNode()
 	end
 end
 
--- Auto Allocate Jewels (placeholder)
+
+
+
+-- Auto Allocate Jewels
 function TreeTabClass:AutoAllocateJewels()
-	-- TODO: implement jewel optimization
+	if self.build.autoAllocateJewelsBuilder then return end
+	local spec = self.build.spec
+	local totalCandidates = 0
+	for nodeId, node in pairs(spec.nodes) do
+		if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" then
+			totalCandidates = totalCandidates + 1
+		end
+	end
+	if totalCandidates == 0 then return end
+	self:AutoAllocateJewelsConfirmed(totalCandidates)
+end
+
+-- List of individual jewel mods to test for socket evaluation
+local JEWEL_MOD_TEXTS = {
+	"16% increased Global Physical Damage",
+	"12% increased Elemental Damage with Attacks",
+	"7% increased Attack Speed",
+	"16% increased Spell Damage",
+	"6% increased Cast Speed",
+	"20% to Critical Strike Multiplier",
+	"12% increased Fire Damage",
+	"12% increased Cold Damage",
+	"12% increased Lightning Damage",
+	"16% increased Damage over Time",
+	"10% increased Area Damage",
+	"12% increased Projectile Damage",
+	"16% increased Minion Damage",
+	"14% increased Chaos Damage",
+	"12% increased Damage",
+}
+
+function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
+	if self.build.autoAllocateJewelsBuilder then return end
+	main:ClosePopup()
+	self.build.autoAllocateJewelsProgress = "Starting..."
+	self.build.autoAllocateJewelsBuilder = coroutine.create(function()
+		local spec = self.build.spec
+		local itemsTab = self.build.itemsTab
+		local startTime = os.clock()
+
+		-- Count available points (normal nodes, exclude ascendancy/class starts/free)
+		local function countNormalAlloc()
+			local c = 0
+			for _, n in pairs(spec.allocNodes) do
+				if n.type ~= "ClassStart" and n.type ~= "AscendClassStart"
+				   and n.isFreeAllocate == nil and not n.ascendancyName then
+					c = c + 1
+				end
+			end
+			return c
+		end
+
+		local origNormal = countNormalAlloc()
+
+		-- Reset tree to empty baseline (class starts kept)
+		wipeTable(spec.hashOverrides)
+		wipeTable(spec.masterySelections)
+		spec:ResetNodes()
+		spec:BuildAllDependsAndPaths()
+
+		local calcFunc = self.build.calcsTab:GetMiscCalculator()
+		local baseOutput = calcFunc({ }, false)
+		local baselineDamage = baseOutput.AverageDamage or 0
+
+		-- Helper: count unallocated non-essential nodes along a candidate's path
+		local function getNodeCost(node)
+			if #node.intuitiveLeapLikesAffecting > 0 then
+				local n = node
+				if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+					return 1
+				end
+				return 0
+			end
+			local cost = 0
+			if node.path then
+				for _, pathNode in ipairs(node.path) do
+					if not pathNode.alloc and pathNode.type ~= "ClassStart" and pathNode.type ~= "AscendClassStart" and not pathNode.ascendancyName then
+						cost = cost + 1
+					end
+				end
+			end
+			return cost
+		end
+
+		-- ========================================================================
+		-- PHASE 1: Evaluate every candidate from baseline (empty tree)
+		-- Uses the same approach as AutoAllocateTree: calcFunc with addNodes.
+		-- Mastery nodes: try each effect separately, record the best one.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 1: Evaluating %d nodes from baseline...", candidateCount)
+		coroutine.yield()
+
+		local cache = { }
+		local candidates = { }
+		local nodeIndex = 0
+		local yieldEvery = 5
+		local reevalCount = 0
+
+		for nodeId, node in pairs(spec.nodes) do
+			local isMastery = node.type == "Mastery"
+			-- Skip sockets (handled in Phase 4), include masteries
+			if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= ""
+			   and node.type ~= "Socket" then
+				if isMastery then
+					-- Mastery: allocate, try each possible effect, pick the best one
+					if node.masteryEffects and #node.masteryEffects > 0 then
+						-- Snapshot: allocate the mastery, try each effect, then restore
+						local allocSnapshot = { }
+						for id_, n_ in pairs(spec.allocNodes) do
+							allocSnapshot[id_] = n_
+						end
+						local masterySnapshot = { }
+						for id_, eid_ in pairs(spec.masterySelections) do
+							masterySnapshot[id_] = eid_
+						end
+
+						spec:AllocNode(node)
+
+						local bestPower = 0
+						local bestEffect = nil
+						for _, me in ipairs(node.masteryEffects) do
+							local effectId = me.effect
+							spec.masterySelections[node.id] = effectId
+							spec:BuildAllDependsAndPaths()
+							local out = calcFunc({ }, false)
+							local power = (out.AverageDamage or 0) - baselineDamage
+							if power > bestPower then
+								bestPower = power
+								bestEffect = effectId
+							end
+						end
+
+						-- Restore snapshot (full state rollback)
+						for id_, n_ in pairs(spec.allocNodes) do
+							if not allocSnapshot[id_] then
+								n_.alloc = false
+								spec.allocNodes[id_] = nil
+							end
+						end
+						wipeTable(spec.masterySelections)
+						for id_, eid_ in pairs(masterySnapshot) do
+							spec.masterySelections[id_] = eid_
+						end
+						spec:BuildAllDependsAndPaths()
+
+						if bestPower > 0 and bestEffect then
+							t_insert(candidates, {
+								node = node,
+								power = bestPower,
+								modKey = node.modKey,
+								bestEffect = bestEffect,
+							})
+						end
+					end
+				else
+					if not cache[node.modKey] then
+						cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+						reevalCount = reevalCount + 1
+					end
+					local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
+					if power > 0 then
+						t_insert(candidates, {
+							node = node,
+							power = power,
+							modKey = node.modKey,
+						})
+					end
+				end
+			end
+			nodeIndex = nodeIndex + 1
+			if nodeIndex % yieldEvery == 0 then
+				local pct = m_floor(nodeIndex / candidateCount * 100)
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 1: Evaluating... %d / %d (%d%%)", nodeIndex, candidateCount, pct)
+				coroutine.yield()
+			end
+		end
+
+		if #candidates == 0 then
+			self.build.autoAllocateJewelsProgress = "No beneficial nodes found."
+			coroutine.yield()
+			self.build.autoAllocateJewelsProgress = nil
+			self.build.autoAllocateJewelsBuilder = nil
+			return
+		end
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 1: %d positive candidates (%d unique mods + masteries)", #candidates, reevalCount)
+		coroutine.yield()
+
+		-- ========================================================================
+		-- PHASE 2: Greedy allocation by power-per-point
+		-- Each round picks the candidate with best power/cost ratio that fits
+		-- remaining budget. After each allocation the tree is rebuilt so
+		-- remaining candidates' path costs reflect shared-path savings.
+		-- Mastery candidates: also set spec.masterySelections on allocation.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 2: Allocating %d points...", origNormal)
+		coroutine.yield()
+
+		local pointsUsed = 0
+		local allocated = { }  -- the "head" (target) nodes allocated
+		local allocatedModKeys = { }
+		local keptCand = { }
+		for _, cand in ipairs(candidates) do
+			keptCand[#keptCand + 1] = cand
+		end
+
+		local function tryAllocCandidate(cand)
+			if cand.node.type == "Mastery" and cand.bestEffect then
+				spec:AllocNode(cand.node)
+				spec.masterySelections[cand.node.id] = cand.bestEffect
+			else
+				spec:AllocNode(cand.node)
+			end
+		end
+
+		local roundCount = 0
+		while pointsUsed < origNormal and #keptCand > 0 do
+			spec:BuildAllDependsAndPaths()
+
+			local bestIdx = nil
+			local bestRatio = -1
+			local bestPower = -1
+			local bestCost = 0
+
+			for idx, cand in ipairs(keptCand) do
+				if not allocatedModKeys[cand.modKey] then
+					local node = cand.node
+					if not node.alloc then
+						local cost = getNodeCost(node)
+						if cost > 0 and pointsUsed + cost <= origNormal then
+							local ratio = cand.power / cost
+							if ratio > bestRatio or (ratio == bestRatio and cand.power > bestPower) then
+								bestRatio = ratio
+								bestPower = cand.power
+								bestIdx = idx
+								bestCost = cost
+							end
+						end
+					end
+				end
+			end
+
+			if not bestIdx then break end
+
+			local cand = keptCand[bestIdx]
+			tryAllocCandidate(cand)
+			pointsUsed = pointsUsed + bestCost
+			t_insert(allocated, cand)
+			allocatedModKeys[cand.modKey] = true
+			t_remove(keptCand, bestIdx)
+
+			roundCount = roundCount + 1
+			if roundCount % 3 == 0 then
+				local pct = m_floor(pointsUsed / origNormal * 100)
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 2: Allocating... %d / %d (%d%%)", pointsUsed, origNormal, pct)
+				coroutine.yield()
+			end
+		end
+
+		spec:BuildAllDependsAndPaths()
+		spec:AddUndoState()
+		self.build.buildFlag = true
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 2: %d nodes allocated using %d points", #allocated, countNormalAlloc())
+		coroutine.yield()
+
+		-- ========================================================================
+		-- PHASE 3: Fine-tuning — remove each allocated node and check if damage
+		-- holds.  If damage doesn't drop the node was wasteful (its mods were
+		-- already provided by other allocated nodes).
+		-- Snapshot includes allocNodes AND masterySelections for correct restore.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3: Fine-tuning %d nodes...", #allocated)
+		coroutine.yield()
+
+		local currentDamage = calcFunc({ }, false).AverageDamage or 0
+
+		for idx, entry in ipairs(allocated) do
+			local node = entry.node
+			if node.alloc then
+				-- Snapshot current state (DeallocNode cascades to dependents)
+				local allocSnapshot = { }
+				for id, n in pairs(spec.allocNodes) do
+					allocSnapshot[id] = n
+				end
+				local masterySnapshot = { }
+				for id, eid in pairs(spec.masterySelections) do
+					masterySnapshot[id] = eid
+				end
+
+				spec:DeallocNode(node)
+				spec:BuildAllDependsAndPaths()
+				local newDamage = calcFunc({ }, false).AverageDamage or 0
+				if newDamage >= currentDamage then
+					currentDamage = newDamage
+				else
+					-- Restore full snapshot
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+					currentDamage = calcFunc({ }, false).AverageDamage or 0
+				end
+			end
+			if idx % 5 == 0 then
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 3: Fine-tuning... %d / %d", idx, #allocated)
+				coroutine.yield()
+			end
+		end
+
+		spec:AddUndoState()
+		self.build.buildFlag = true
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3: Fine-tuned, %d nodes remain", countNormalAlloc())
+		coroutine.yield()
+
+		-- ========================================================================
+		-- REFINEMENT LOOP: Re-evaluate from the current tree, allocate remaining
+		-- points, and fine-tune.  Each round corrects the bias from the previous
+		-- round's power values and catches nodes that were under/over-rated.
+		-- ========================================================================
+		for refineRound = 1, 2 do
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Refinement round %d/2: Re-evaluating...", refineRound)
+			coroutine.yield()
+
+			local currentDamage = calcFunc({ }, false).AverageDamage or 0
+			local roundCands = { }
+			local roundCache = { }
+			local rnIdx = 0
+			local rnYieldEvery = 5
+
+			for nodeId, node in pairs(spec.nodes) do
+				if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= ""
+					and node.type ~= "Socket" then
+					if node.type == "Mastery" then
+						if node.masteryEffects and #node.masteryEffects > 0 then
+							local allocSnapshot = { }
+							for id_, n_ in pairs(spec.allocNodes) do
+								allocSnapshot[id_] = n_
+							end
+							local masterySnapshot = { }
+							for id_, eid_ in pairs(spec.masterySelections) do
+								masterySnapshot[id_] = eid_
+							end
+
+							spec:AllocNode(node)
+
+							local bestPower = 0
+							local bestEffect = nil
+							for _, me in ipairs(node.masteryEffects) do
+								local effectId = me.effect
+								spec.masterySelections[node.id] = effectId
+								spec:BuildAllDependsAndPaths()
+								local out = calcFunc({ }, false)
+								local power = (out.AverageDamage or 0) - currentDamage
+								if power > bestPower then
+									bestPower = power
+									bestEffect = effectId
+								end
+							end
+
+							for id_, n_ in pairs(spec.allocNodes) do
+								if not allocSnapshot[id_] then
+									n_.alloc = false
+									spec.allocNodes[id_] = nil
+								end
+							end
+							wipeTable(spec.masterySelections)
+							for id_, eid_ in pairs(masterySnapshot) do
+								spec.masterySelections[id_] = eid_
+							end
+							spec:BuildAllDependsAndPaths()
+
+							if bestPower > 0 and bestEffect then
+								t_insert(roundCands, {
+									node = node,
+									power = bestPower,
+									modKey = node.modKey,
+									bestEffect = bestEffect,
+								})
+							end
+						end
+					end
+				else
+					if not roundCache[node.modKey] then
+						roundCache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+					end
+					local power = (roundCache[node.modKey].AverageDamage or 0) - currentDamage
+					if power > 0 then
+						t_insert(roundCands, {
+							node = node,
+							power = power,
+							modKey = node.modKey,
+						})
+					end
+				end
+				rnIdx = rnIdx + 1
+				if rnIdx % rnYieldEvery == 0 then
+					self.build.autoAllocateJewelsProgress = string.format(
+						"Refinement round %d/2: Re-evaluating... %d nodes processed", refineRound, rnIdx)
+					coroutine.yield()
+				end
+			end
+
+			t_sort(roundCands, function(a, b)
+				local ac = getNodeCost(a.node)
+				local bc = getNodeCost(b.node)
+				local ar = ac > 0 and a.power / ac or 0
+				local br = bc > 0 and b.power / bc or 0
+				if ar ~= br then return ar > br end
+				return a.power > b.power
+			end)
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Refinement round %d/2: %d re-evaluated candidates", refineRound, #roundCands)
+			coroutine.yield()
+
+			-- Allocate remaining points with re-evaluated power values
+			local roundBudget = origNormal - countNormalAlloc()
+			if roundBudget <= 0 or #roundCands == 0 then break end
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Refinement round %d/2: Allocating %d points...", refineRound, roundBudget)
+			coroutine.yield()
+
+			local rpUsed = 0
+			local rpAllocated = { }
+			local rpAllocatedModKeys = { }
+			local rpKept = { }
+			for _, cand in ipairs(roundCands) do
+				rpKept[#rpKept + 1] = cand
+			end
+
+			local rpRoundCount = 0
+			while rpUsed < roundBudget and #rpKept > 0 do
+				spec:BuildAllDependsAndPaths()
+
+				local bestIdx = nil
+				local bestRatio = -1
+				local bestPower = -1
+				local bestCost = 0
+
+				for idx, cand in ipairs(rpKept) do
+					if not rpAllocatedModKeys[cand.modKey] then
+						local node = cand.node
+						if not node.alloc then
+							local cost = getNodeCost(node)
+							if cost > 0 and rpUsed + cost <= roundBudget then
+								local ratio = cand.power / cost
+								if ratio > bestRatio or (ratio == bestRatio and cand.power > bestPower) then
+									bestRatio = ratio
+									bestPower = cand.power
+									bestIdx = idx
+									bestCost = cost
+								end
+							end
+						end
+					end
+				end
+
+				if not bestIdx then break end
+
+				local cand = rpKept[bestIdx]
+				if cand.node.type == "Mastery" and cand.bestEffect then
+					spec:AllocNode(cand.node)
+					spec.masterySelections[cand.node.id] = cand.bestEffect
+				else
+					spec:AllocNode(cand.node)
+				end
+				rpUsed = rpUsed + bestCost
+				t_insert(rpAllocated, cand)
+				rpAllocatedModKeys[cand.modKey] = true
+				t_remove(rpKept, bestIdx)
+
+				rpRoundCount = rpRoundCount + 1
+				if rpRoundCount % 3 == 0 then
+					self.build.autoAllocateJewelsProgress = string.format(
+						"Refinement round %d/2: Allocating... %d / %d", refineRound, rpUsed, roundBudget)
+					coroutine.yield()
+				end
+			end
+
+			spec:BuildAllDependsAndPaths()
+
+			for _, cand in ipairs(rpAllocated) do
+				t_insert(allocated, cand)
+			end
+
+			spec:AddUndoState()
+			self.build.buildFlag = true
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Refinement round %d/2: Allocated %d nodes (%d total)",
+					refineRound, #rpAllocated, countNormalAlloc())
+			coroutine.yield()
+
+			-- Fine-tune new allocations from this round
+			if #rpAllocated > 0 then
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Refinement round %d/2: Fine-tuning %d new nodes...", refineRound, #rpAllocated)
+				coroutine.yield()
+
+				currentDamage = calcFunc({ }, false).AverageDamage or 0
+
+				for idx, entry in ipairs(rpAllocated) do
+					local node = entry.node
+					if node.alloc then
+						local allocSnapshot = { }
+						for id_, n_ in pairs(spec.allocNodes) do
+							allocSnapshot[id_] = n_
+						end
+						local masterySnapshot = { }
+						for id_, eid_ in pairs(spec.masterySelections) do
+							masterySnapshot[id_] = eid_
+						end
+
+						spec:DeallocNode(node)
+						spec:BuildAllDependsAndPaths()
+						local newDamage = calcFunc({ }, false).AverageDamage or 0
+						if newDamage >= currentDamage then
+							currentDamage = newDamage
+						else
+							for id_, n_ in pairs(spec.allocNodes) do
+								n_.alloc = false
+								spec.allocNodes[id_] = nil
+							end
+							for id_, n_ in pairs(allocSnapshot) do
+								n_.alloc = true
+								spec.allocNodes[id_] = n_
+							end
+							wipeTable(spec.masterySelections)
+							for id_, eid_ in pairs(masterySnapshot) do
+								spec.masterySelections[id_] = eid_
+							end
+							spec:BuildAllDependsAndPaths()
+							currentDamage = calcFunc({ }, false).AverageDamage or 0
+						end
+					end
+					if idx % 5 == 0 then
+						self.build.autoAllocateJewelsProgress = string.format(
+							"Refinement round %d/2: Fine-tuning... %d / %d", refineRound, idx, #rpAllocated)
+						coroutine.yield()
+					end
+				end
+
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+		end -- for refineRound
+
+		-- ========================================================================
+		-- PHASE 3b: Cascading fine-tune -- try removing each allocated node;
+		-- some early-allocated nodes may have been made redundant by later ones.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3b: Cascading fine-tune %d nodes...", #allocated)
+		coroutine.yield()
+
+		local cascadeDamage = calcFunc({ }, false).AverageDamage or 0
+		local cascadeRemoved = 0
+
+		for idx, entry in ipairs(allocated) do
+			local node = entry.node
+			if node.alloc then
+				local allocSnapshot = { }
+				for id_, n_ in pairs(spec.allocNodes) do
+					allocSnapshot[id_] = n_
+				end
+				local masterySnapshot = { }
+				for id_, eid_ in pairs(spec.masterySelections) do
+					masterySnapshot[id_] = eid_
+				end
+
+				spec:DeallocNode(node)
+				spec:BuildAllDependsAndPaths()
+				local newDamage = calcFunc({ }, false).AverageDamage or 0
+				if newDamage >= cascadeDamage then
+					cascadeDamage = newDamage
+					cascadeRemoved = cascadeRemoved + 1
+				else
+					for id_, n_ in pairs(spec.allocNodes) do
+						n_.alloc = false
+						spec.allocNodes[id_] = nil
+					end
+					for id_, n_ in pairs(allocSnapshot) do
+						n_.alloc = true
+						spec.allocNodes[id_] = n_
+					end
+					wipeTable(spec.masterySelections)
+					for id_, eid_ in pairs(masterySnapshot) do
+						spec.masterySelections[id_] = eid_
+					end
+					spec:BuildAllDependsAndPaths()
+				end
+			end
+			if idx % 5 == 0 then
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 3b: Cascading... %d / %d (removed %d)", idx, #allocated, cascadeRemoved)
+				coroutine.yield()
+			end
+		end
+
+		if cascadeRemoved > 0 then
+			spec:AddUndoState()
+			self.build.buildFlag = true
+		end
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3b: Removed %d redundant nodes, %d remain",
+				cascadeRemoved, countNormalAlloc())
+		coroutine.yield()
+
+		-- ========================================================================
+		-- PHASE 3c: Re-evaluate already-allocated mastery effects.
+		-- Mastery effects were selected in Phase 1 from the empty tree, but
+		-- the optimal effect depends on which other nodes are allocated.  This
+		-- pass tries every alternative effect for each allocated mastery.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = "Phase 3c: Re-evaluating mastery effects..."
+		coroutine.yield()
+
+		local masteryChanges = 0
+		local masteryIdx = 0
+		for _, entry in ipairs(allocated) do
+			local node = entry.node
+			if node.alloc and node.type == "Mastery" and node.masteryEffects and #node.masteryEffects > 0 then
+				local currentEffect = spec.masterySelections[node.id]
+				if currentEffect then
+					local baselineDamage = calcFunc({ }, false).AverageDamage or 0
+					local bestPower = 0
+					local bestEffect = currentEffect
+					for _, me in ipairs(node.masteryEffects) do
+						spec.masterySelections[node.id] = me.effect
+						spec:BuildAllDependsAndPaths()
+						local out = calcFunc({ }, false)
+						local power = (out.AverageDamage or 0) - baselineDamage
+						if power > bestPower then
+							bestPower = power
+							bestEffect = me.effect
+						end
+					end
+					if bestEffect ~= currentEffect then
+						spec.masterySelections[node.id] = bestEffect
+						masteryChanges = masteryChanges + 1
+					end
+					spec:BuildAllDependsAndPaths()
+				end
+			end
+			masteryIdx = masteryIdx + 1
+			if masteryIdx % 3 == 0 then
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 3c: Re-evaluating masteries... %d / %d", masteryIdx, #allocated)
+				coroutine.yield()
+			end
+		end
+
+		if masteryChanges > 0 then
+			spec:AddUndoState()
+			self.build.buildFlag = true
+		end
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3c: Changed %d mastery effects", masteryChanges)
+		coroutine.yield()
+
+		-- Update currentDamage for Phase 3.5 swap optimisation
+		currentDamage = calcFunc({ }, false).AverageDamage or 0
+
+		-- ========================================================================
+		-- PHASE 3.5: Multi-round swap optimisation
+		-- Runs up to 3 rounds of weak->strong node replacement. Each round
+		-- rebuilds candidate lists since tree state changes after swaps.
+		-- ========================================================================
+		local totalSwapAttempts = 0
+		local swapRoundsDone = 0
+
+		for swapRound = 1, 3 do
+			if countNormalAlloc() <= 0 then break end
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Phase 3.5 round %d/3: Swapping weak nodes...", swapRound)
+			coroutine.yield()
+
+			-- Collect allocated entries sorted by ratio ascending (worst first)
+			local allocatedOrder = { }
+			for _, entry in ipairs(allocated) do
+				if entry.node.alloc then
+					local cost = getNodeCost(entry.node)
+					if cost > 0 then
+						t_insert(allocatedOrder, {
+							entry = entry,
+							ratio = entry.power / cost,
+						})
+					end
+				end
+			end
+			t_sort(allocatedOrder, function(a, b) return a.ratio < b.ratio end)
+
+			-- Build best unallocated candidates list (sorted by ratio DESC)
+			local unallocCands = { }
+			for _, cand in ipairs(keptCand) do
+				if not cand.node.alloc then
+					local cost = getNodeCost(cand.node)
+					if cost > 0 then
+						t_insert(unallocCands, {
+							cand = cand,
+							cost = cost,
+							ratio = cand.power / cost,
+						})
+					end
+				end
+			end
+			-- Also check allocated[] list for entries that got deallocated
+			for _, entry in ipairs(allocated) do
+				if not entry.node.alloc then
+					local cost = getNodeCost(entry.node)
+					if cost > 0 then
+						t_insert(unallocCands, {
+							cand = entry,
+							cost = cost,
+							ratio = entry.power / cost,
+						})
+					end
+				end
+			end
+			t_sort(unallocCands, function(a, b)
+				if a.ratio ~= b.ratio then return a.ratio > b.ratio end
+				return a.cand.power > b.cand.power
+			end)
+
+			local swapSuccesses = 0
+			local maxSwapAttempts = 10
+
+			for _, weak in ipairs(allocatedOrder) do
+				local weakNode = weak.entry.node
+				if not weakNode.alloc then break end
+				if swapSuccesses >= maxSwapAttempts then break end
+
+				-- Snapshot state before swap attempt
+				local allocSnapshot = { }
+				for id, n in pairs(spec.allocNodes) do
+					allocSnapshot[id] = n
+				end
+				local masterySnapshot = { }
+				for id, eid in pairs(spec.masterySelections) do
+					masterySnapshot[id] = eid
+				end
+
+				-- Deallocate weak node and note how many points are freed
+				local beforeAlloc = countNormalAlloc()
+				spec:DeallocNode(weakNode)
+				spec:BuildAllDependsAndPaths()
+				local afterDealloc = countNormalAlloc()
+				local freedPoints = beforeAlloc - afterDealloc
+
+				if freedPoints <= 0 then
+					-- Restore and skip
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+					goto continue_swap
+				end
+
+				-- Find the best unallocated candidate that fits in freed budget
+				local bestSwapCand = nil
+				for _, uc in ipairs(unallocCands) do
+					if not uc.cand.node.alloc and uc.cost <= freedPoints then
+						bestSwapCand = uc
+						break
+					end
+				end
+
+				if not bestSwapCand then
+					-- Nothing fits, restore
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+					goto continue_swap
+				end
+
+				-- Allocate the replacement candidate
+				local replCand = bestSwapCand.cand
+				if replCand.node.type == "Mastery" and replCand.bestEffect then
+					spec:AllocNode(replCand.node)
+					spec.masterySelections[replCand.node.id] = replCand.bestEffect
+				else
+					spec:AllocNode(replCand.node)
+				end
+				spec:BuildAllDependsAndPaths()
+
+				-- Check if damage improved
+				local newDamage = calcFunc({ }, false).AverageDamage or 0
+				if newDamage > currentDamage then
+					currentDamage = newDamage
+					swapSuccesses = swapSuccesses + 1
+				else
+					-- Revert to pre-swap state
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+				end
+
+				if swapSuccesses % 3 == 0 then
+					self.build.autoAllocateJewelsProgress = string.format(
+						"Phase 3.5 round %d/3: %d swaps so far...", swapRound, swapSuccesses)
+					coroutine.yield()
+				end
+
+				::continue_swap::
+			end
+
+			if swapSuccesses > 0 then
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+
+			totalSwapAttempts = totalSwapAttempts + swapSuccesses
+			swapRoundsDone = swapRound
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Phase 3.5 round %d/3: %d swaps", swapRound, swapSuccesses)
+			coroutine.yield()
+
+			if swapSuccesses == 0 then break end
+		end
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
+		coroutine.yield()
+		-- ========================================================================
+		-- PHASE 4: Allocate reachable sockets (with leftover budget), then
+		-- find and insert the best jewels.
+		-- ========================================================================
+		-- Count spare points after tree optimisation
+		local finalAllocCount = countNormalAlloc()
+		local sparePoints = origNormal - finalAllocCount
+
+		local socketNodes = { }
+		for nodeId, node in pairs(spec.nodes) do
+			if not node.alloc and node.type == "Socket" and node.path then
+				t_insert(socketNodes, node)
+			end
+		end
+
+		if #socketNodes > 0 and sparePoints > 0 then
+			-- Score socket candidates by DPS/cost, allocate best first
+			local baselineOut = calcFunc({ }, true)
+			local baselineDPS = baselineOut.CombinedDPS or baselineOut.AverageDamage or 0
+
+			-- Use first 4 JEWEL_MOD_TEXTS as reference for DPS evaluation
+			local refMods = { }
+			for i = 1, math.min(4, #JEWEL_MOD_TEXTS) do
+				t_insert(refMods, JEWEL_MOD_TEXTS[i])
+			end
+			local refRaw = "Rarity: RARE\nRef Jewel\nRuby\nImplicits: 0\n" .. t_concat(refMods, "\n")
+
+			local scoredSockets = { }
+			local evalCount = 0
+			local maxEval = 15
+
+			self.build.autoAllocateJewelsProgress = "Phase 4: Evaluating socket DPS..."
+			coroutine.yield()
+
+			for _, node in ipairs(socketNodes) do
+				local cost = getNodeCost(node)
+				if cost > 0 and cost <= sparePoints and evalCount < maxEval then
+					local jewel = new("Item", refRaw)
+					if jewel and jewel.base then
+						local override = {
+							addNodes = { [node] = true },
+							repSlotName = "Jewel " .. node.id,
+							repItem = jewel,
+						}
+						local out = calcFunc(override, true)
+						local dps = out.CombinedDPS or out.AverageDamage or 0
+						local boost = dps - baselineDPS
+						if boost > 0 then
+							t_insert(scoredSockets, { node = node, cost = cost, score = boost / cost })
+						else
+							t_insert(scoredSockets, { node = node, cost = cost, score = 0 })
+						end
+						evalCount = evalCount + 1
+					end
+				elseif cost > 0 and cost <= sparePoints then
+					t_insert(scoredSockets, { node = node, cost = cost, score = 0 })
+				end
+			end
+
+			t_sort(scoredSockets, function(a, b)
+				if a.score ~= b.score then return a.score > b.score end
+				return a.cost < b.cost
+			end)
+
+			for _, scored in ipairs(scoredSockets) do
+				if sparePoints <= 0 then break end
+				if scored.cost <= sparePoints then
+					spec:AllocNode(scored.node)
+					sparePoints = sparePoints - scored.cost
+				end
+			end
+
+			spec:BuildAllDependsAndPaths()
+			spec:AddUndoState()
+			self.build.buildFlag = true
+		end
+
+		-- Count allocated sockets
+		local socketCount = 0
+		for nodeId, node in pairs(spec.nodes) do
+			if node.alloc and node.type == "Socket" then
+				socketCount = socketCount + 1
+			end
+		end
+
+		if socketCount > 0 and itemsTab then
+			itemsTab:UpdateSockets()
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Phase 4: Evaluating jewels for %d sockets...", socketCount)
+			coroutine.yield()
+
+			-- Pick first allocated socket as reference for mod evaluation
+			local refSocket
+			for nodeId, node in pairs(spec.nodes) do
+				if node.alloc and node.type == "Socket" then
+					refSocket = node
+					break
+				end
+			end
+
+			if refSocket then
+				local jewelCalcFunc = self.build.calcsTab:GetMiscCalculator()
+				local currentOutput = jewelCalcFunc({ }, true)
+				local baseDPS = currentOutput.CombinedDPS or currentOutput.AverageDamage or 0
+
+				-- --- Evaluate individual rare jewel mods ---
+				local modBoosts = { }
+				for _, modText in ipairs(JEWEL_MOD_TEXTS) do
+					local raw = "Rarity: MAGIC\nRuby\nImplicits: 0\n" .. modText
+					local jewel = new("Item", raw)
+					if jewel and jewel.base then
+						local override = {
+							addNodes = { [refSocket] = true },
+							repSlotName = "Jewel " .. refSocket.id,
+							repItem = jewel,
+						}
+						local out = jewelCalcFunc(override, true)
+						local boost = (out.CombinedDPS or out.AverageDamage or 0) - baseDPS
+						t_insert(modBoosts, { text = modText, boost = boost })
+					end
+				end
+
+				t_sort(modBoosts, function(a, b) return a.boost > b.boost end)
+
+				-- Top mods for the rare jewel template
+				local templateMods = { }
+				for i = 1, math.min(4, #modBoosts) do
+					if modBoosts[i].boost > 0 then
+						t_insert(templateMods, modBoosts[i].text)
+					end
+				end
+
+				-- --- Unique jewel candidates ---
+				local UNIQUE_JEWEL_RAW = {
+					{ name = "Grand Spectrum (Ruby)", raw = "Grand Spectrum\nRuby\nLimited to: 3\n2% increased Maximum Life per socketed Grand Spectrum" },
+					{ name = "Grand Spectrum (Emerald)", raw = "Grand Spectrum\nEmerald\nLimited to: 3\n2% increased Spirit per socketed Grand Spectrum" },
+					{ name = "Grand Spectrum (Sapphire)", raw = "Grand Spectrum\nSapphire\nVariant: Pre 0.4.0\nVariant: Current\nSelected Variant: 2\nLimited to: 3\n{variant:2}+6% to all Elemental Resistances per socketed Grand Spectrum" },
+				}
+
+				local function tryAddUnique(name)
+					local sources = { data.uniques.jewel, data.uniques.generated }
+					for _, tbl in ipairs(sources) do
+						if tbl then
+							for _, raw in ipairs(tbl) do
+								if raw:match("^" .. name .. "\n") then
+									t_insert(UNIQUE_JEWEL_RAW, { name = name, raw = raw })
+									return
+								end
+							end
+						end
+					end
+				end
+				if data and data.uniques then
+					tryAddUnique("Heroic Tragedy")
+					tryAddUnique("Undying Hate")
+					tryAddUnique("Against the Darkness")
+					tryAddUnique("Heart of the Well")
+					tryAddUnique("Prism of Belief")
+					tryAddUnique("The Adorned")
+					tryAddUnique("Controlled Metamorphosis")
+					tryAddUnique("From Nothing")
+					tryAddUnique("Megalomaniac")
+				end
+
+				local uniqueBoosts = { }
+				if #UNIQUE_JEWEL_RAW > 0 then
+					self.build.autoAllocateJewelsProgress = string.format(
+						"Evaluating %d unique jewels...", #UNIQUE_JEWEL_RAW)
+					coroutine.yield()
+				end
+				for _, entry in ipairs(UNIQUE_JEWEL_RAW) do
+					local jewel = new("Item", entry.raw)
+					if jewel and jewel.base then
+						local override = {
+							addNodes = { [refSocket] = true },
+							repSlotName = "Jewel " .. refSocket.id,
+							repItem = jewel,
+						}
+						local out = jewelCalcFunc(override, true)
+						local boost = (out.CombinedDPS or out.AverageDamage or 0) - baseDPS
+						if boost > 0 then
+							t_insert(uniqueBoosts, { name = entry.name, raw = entry.raw, boost = boost })
+						end
+					end
+				end
+				t_sort(uniqueBoosts, function(a, b) return a.boost > b.boost end)
+
+				-- --- Decide: best unique or best rare combination ---
+				local bestRareBoost = #templateMods > 0 and modBoosts[1].boost or 0
+				local bestUniqueBoost = #uniqueBoosts > 0 and uniqueBoosts[1].boost or 0
+
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 4: Inserting jewels into %d sockets...", socketCount)
+				coroutine.yield()
+
+				if bestUniqueBoost > bestRareBoost and #uniqueBoosts > 0 then
+					-- Use the best unique jewel (respect Limited to: N)
+					local bestEntry = uniqueBoosts[1]
+					local maxCount = 999
+					for line in bestEntry.raw:gmatch("[^\n]+") do
+						local limit = tonumber(line:match("Limited to: (%d+)"))
+						if limit then maxCount = limit break end
+					end
+					local inserted = 0
+					for nodeId, node in pairs(spec.nodes) do
+						if node.alloc and node.type == "Socket" and inserted < maxCount then
+							local jewel = new("Item", bestEntry.raw)
+							if jewel and jewel.base then
+								itemsTab:AddItem(jewel, true)
+								local slot = itemsTab.sockets[nodeId]
+								if slot then slot:SetSelItemId(jewel.id) end
+								inserted = inserted + 1
+							end
+						end
+					end
+					itemsTab:AddUndoState()
+				elseif #templateMods > 0 then
+					-- Use rare jewels with the 4 best evaluated mods
+					local jewelIndex = 0
+					for nodeId, node in pairs(spec.nodes) do
+						if node.alloc and node.type == "Socket" then
+							jewelIndex = jewelIndex + 1
+							local title = jewelIndex == 1 and "Optimal Jewel" or "Optimal Jewel " .. jewelIndex
+							local raw = "Rarity: RARE\n" .. title .. "\nRuby\nImplicits: 0\n" .. t_concat(templateMods, "\n")
+							local jewel = new("Item", raw)
+							if jewel and jewel.base then
+								itemsTab:AddItem(jewel, true)
+								local slot = itemsTab.sockets[nodeId]
+								if slot then slot:SetSelItemId(jewel.id) end
+							end
+						end
+					end
+					itemsTab:AddUndoState()
+				end
+				self.build.buildFlag = true
+			end
+		end
+
+		-- ========================================================================
+		-- PHASE 5: Heatmap-inspired final optimisation
+		-- Scan all unallocated nodes for strong nodes missed by earlier phases.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = "Phase 5: Scanning for missed strong nodes..."
+		coroutine.yield()
+
+		local phase5Baseline = calcFunc({ }, true)
+		local phase5BaseDPS = phase5Baseline.CombinedDPS or phase5Baseline.AverageDamage or 0
+
+		-- Collect all unallocated non-socket, non-ascendancy nodes with a path
+		local phase5Cands = { }
+		for nodeId, node in pairs(spec.nodes) do
+			if not node.alloc and node.path and not node.ascendancyName and node.type ~= "Socket" then
+				if node.type == "Normal" or node.type == "Notable" or node.type == "Keystone" or node.type == "Mastery" then
+					t_insert(phase5Cands, node)
+				end
+			end
+		end
+
+		-- Score candidates by DPS boost (up to 20 evaluations)
+		local phase5Scored = { }
+		local phase5EvalCount = 0
+		local phase5MaxEval = 20
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 5: Evaluating %d unallocated nodes...", math.min(#phase5Cands, phase5MaxEval))
+		coroutine.yield()
+
+		for _, node in ipairs(phase5Cands) do
+			if phase5EvalCount >= phase5MaxEval then break end
+			local out = calcFunc({ addNodes = { [node] = true } }, true)
+			local dps = out.CombinedDPS or out.AverageDamage or 0
+			local boost = dps - phase5BaseDPS
+			if boost > 0 then
+				t_insert(phase5Scored, { node = node, boost = boost })
+			end
+			phase5EvalCount = phase5EvalCount + 1
+			if phase5EvalCount % 5 == 0 then
+				self.build.autoAllocateJewelsProgress = string.format(
+					"Phase 5: Evaluating... %d / %d", phase5EvalCount, phase5MaxEval)
+				coroutine.yield()
+			end
+		end
+		t_sort(phase5Scored, function(a, b) return a.boost > b.boost end)
+
+		local phase5HotCount = math.min(5, #phase5Scored)
+		local phase5Swaps = 0
+		local phase5MaxTotalSwaps = 5
+
+		if phase5HotCount > 0 then
+			-- Build weakest-allocated list from Phase 2 data
+			local phase5WeakOrder = { }
+			for _, entry in ipairs(allocated) do
+				if entry.node.alloc then
+					local cost = getNodeCost(entry.node)
+					if cost > 0 then
+						t_insert(phase5WeakOrder, { entry = entry, cost = cost, ratio = entry.power / cost })
+					end
+				end
+			end
+			t_sort(phase5WeakOrder, function(a, b) return a.ratio < b.ratio end)
+			local phase5MaxWeak = math.min(10, #phase5WeakOrder)
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Phase 5: Trying %d hot vs %d weak...", phase5HotCount, phase5MaxWeak)
+			coroutine.yield()
+
+			for hi = 1, phase5HotCount do
+				local hot = phase5Scored[hi]
+				if phase5Swaps >= phase5MaxTotalSwaps then break end
+				if not hot.node.alloc then
+					for wi = 1, phase5MaxWeak do
+						local weak = phase5WeakOrder[wi]
+						if phase5Swaps >= phase5MaxTotalSwaps then break end
+						if weak.entry.node.alloc and not hot.node.alloc then
+						local hotCost = getNodeCost(hot.node)
+						if hotCost > 0 and hotCost <= weak.cost + 1 then
+
+						-- Snapshot current tree state
+						local snap = { }
+						for id, n in pairs(spec.allocNodes) do
+							snap[id] = n
+						end
+						local masterySnap = { }
+						for id, eid in pairs(spec.masterySelections) do
+							masterySnap[id] = eid
+						end
+
+						-- Deallocate weak, check freed budget
+						local beforeDealloc = countNormalAlloc()
+						spec:DeallocNode(weak.entry.node)
+						spec:BuildAllDependsAndPaths()
+						local afterDealloc = countNormalAlloc()
+						local freedPoints = beforeDealloc - afterDealloc
+
+						if freedPoints > 0 and hotCost <= freedPoints then
+							-- Allocate hot node
+							spec:AllocNode(hot.node)
+							spec:BuildAllDependsAndPaths()
+
+							local newOut = calcFunc({ }, true)
+							local newDPS = newOut.CombinedDPS or newOut.AverageDamage or 0
+
+							if newDPS > phase5BaseDPS then
+								phase5BaseDPS = newDPS
+								phase5Swaps = phase5Swaps + 1
+								spec:AddUndoState()
+								self.build.buildFlag = true
+								self.build.autoAllocateJewelsProgress = string.format(
+									"Phase 5: Swap %d successful", phase5Swaps)
+								coroutine.yield()
+							else
+								-- Revert
+								for id, n in pairs(spec.allocNodes) do
+									n.alloc = false
+									spec.allocNodes[id] = nil
+								end
+								for id, n in pairs(snap) do
+									n.alloc = true
+									spec.allocNodes[id] = n
+								end
+								wipeTable(spec.masterySelections)
+								for id, eid in pairs(masterySnap) do
+									spec.masterySelections[id] = eid
+								end
+								spec:BuildAllDependsAndPaths()
+							end
+						else
+							-- Not enough budget freed, revert deallocation
+							for id, n in pairs(spec.allocNodes) do
+								n.alloc = false
+								spec.allocNodes[id] = nil
+							end
+							for id, n in pairs(snap) do
+								n.alloc = true
+								spec.allocNodes[id] = n
+							end
+							wipeTable(spec.masterySelections)
+							for id, eid in pairs(masterySnap) do
+								spec.masterySelections[id] = eid
+							end
+							spec:BuildAllDependsAndPaths()
+						end
+						end
+						end
+					end
+				end
+			end
+
+			if phase5Swaps > 0 then
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+		end
+
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Phase 5: %d heatmap swaps", phase5Swaps)
+		coroutine.yield()
+		local elapsed = m_floor((os.clock() - startTime) * 10) / 10
+		self.build.autoAllocateJewelsProgress = string.format(
+			"Done: %d nodes + %d jewels optimized (%.1fs)",
+			countNormalAlloc(), socketCount, elapsed)
+		coroutine.yield()
+		self.build.autoAllocateJewelsProgress = nil
+		self.build.autoAllocateJewelsBuilder = nil
+	end)
+end
+
+function TreeTabClass:ResumeAutoAllocateJewels()
+	local builder = self.build.autoAllocateJewelsBuilder
+	if builder and coroutine.status(builder) ~= "dead" then
+		local res, errMsg = coroutine.resume(builder)
+		if not res then error(errMsg) end
+		if coroutine.status(builder) == "dead" then
+			self.controls.autoAllocateJewels.enabled = true
+			self.controls.autoAllocateJewels.label = "Auto Allocate Jewels"
+			self.build.autoAllocateJewelsProgress = nil
+			self.build.autoAllocateJewelsBuilder = nil
+		end
+	end
 end
