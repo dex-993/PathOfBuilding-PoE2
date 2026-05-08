@@ -402,7 +402,7 @@ function TreeTabClass:Draw(viewPort, inputEvents)
 								+ self.controls.versionText.width() + self.controls.versionText.x
 								+ self.controls.versionSelect.width + self.controls.versionSelect.x
 								+ (self.isComparing and (self.controls.compareSelect.width + self.controls.compareSelect.x) or 0)
-	
+
 	local widthSecondLineControls = self.controls.treeSearch.width + 8
 									--+ self.controls.findTimelessJewel.width + self.controls.findTimelessJewel.x
 									+ self.controls.treeHeatMap.width + 130
@@ -413,7 +413,7 @@ function TreeTabClass:Draw(viewPort, inputEvents)
 									+ self.controls.autoAllocate.width + self.controls.autoAllocate.x
 									+ self.controls.removeWorstNode.width + self.controls.removeWorstNode.x
 									+ self.controls.autoAllocateJewels.width + self.controls.autoAllocateJewels.x
-	
+
 	-- Check first line
 	if viewPort.width >= widthFirstLineControls + widthSecondLineControls + rightMargin then
 		linesHeight = 0
@@ -886,7 +886,7 @@ function TreeTabClass:ModifyAttributePopup(hoverNode)
 	local controls = { }
 	local spec = self.build.spec
 	local attributes = { "Strength", "Dexterity", "Intelligence" }
-	
+
 	controls.attrSelect = new("DropDownControl", {"TOPLEFT",nil,"TOPLEFT"}, {225, 30, 100, 18}, attributes, nil)
 	controls.save = new("ButtonControl", nil, {-50, 65, 80, 20}, "Allocate", function()
 		spec:SwitchAttributeNode(hoverNode.id, controls.attrSelect.selIndex)
@@ -1451,7 +1451,7 @@ function TreeTabClass:FindTimelessJewel()
 			break
 		end
 	end
-	
+
 	local function clearProtected() -- clear all controls, nodes related to Militant Faith filtering
 		protectedNodesCount = 0
 		protectedNodes = { }
@@ -2450,6 +2450,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		local calcFunc = self.build.calcsTab:GetMiscCalculator()
 		local baseOutput = calcFunc({ }, false)
 		local emptyTreeDamage = baseOutput.AverageDamage or 0
+		local initialUndoState = spec:CreateUndoState()
 
 		local cache = { }
 		local candidates = { }
@@ -2522,8 +2523,30 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		spec:BuildAllDependsAndPaths()
 		spec:AddUndoState()
 		self.build.buildFlag = true
+		-- Helper: count unallocated non-essential nodes along a candidate's path
+		local function getNodeCost(node)
+			if #node.intuitiveLeapLikesAffecting > 0 then
+				local n = node
+				if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+					return 1
+				end
+				return 0
+			end
+			local cost = 0
+			if node.path then
+				for _, pathNode in ipairs(node.path) do
+					if not pathNode.alloc and pathNode.type ~= "ClassStart" and pathNode.type ~= "AscendClassStart" and not pathNode.ascendancyName then
+						cost = cost + 1
+					end
+				end
+			end
+			return cost
+		end
 
-		-- Phase 3: Fine-tune
+		-- ========================================================================
+		-- PHASE 3: Fine-tuning -- remove each allocated node and check if damage
+		-- improves or stays the same (meaning the node was redundant).
+		-- ========================================================================
 		local currentDamage = calcFunc({ }, false).AverageDamage or 0
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3: Fine-tuning %d nodes...", #allocated)
@@ -2550,8 +2573,495 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 			end
 		end
 
-		spec:AddUndoState()
-		self.build.buildFlag = true
+		self.build.autoAllocateProgress = string.format(
+			"Phase 3: Fine-tuned, %d nodes remain", #allocated)
+		coroutine.yield()
+
+		-- ========================================================================
+		-- REFINEMENT LOOP: re-check allocations after tree state changes
+		-- ========================================================================
+		for refineRound = 1, 2 do
+			self.build.autoAllocateProgress = string.format(
+				"Refine round %d/2: Fine-tuning %d nodes...", refineRound, #allocated)
+			coroutine.yield()
+
+			local removedAny = false
+			for idx = #allocated, 1, -1 do
+				local entry = allocated[idx]
+				local node = entry.node
+				if node.alloc then
+					spec:DeallocNode(node)
+					spec:BuildAllDependsAndPaths()
+					local dmg = calcFunc({ }, false).AverageDamage or 0
+					if dmg >= currentDamage then
+						currentDamage = dmg
+						t_remove(allocated, idx)
+						removedAny = true
+					else
+						spec:AllocNode(node)
+						spec:BuildAllDependsAndPaths()
+					end
+				end
+				if idx % 10 == 0 then
+					self.build.autoAllocateProgress = string.format(
+						"Refine round %d/2: Fine-tuning... %d / %d", refineRound, #allocated - idx, #allocated)
+					coroutine.yield()
+				end
+			end
+
+			-- Phase 3b: Cascading fine-tune
+			local cascadeRemoved = 0
+			local cascadeChanged = true
+			while cascadeChanged do
+				cascadeChanged = false
+				for idx = #allocated, 1, -1 do
+					local entry = allocated[idx]
+					local node = entry.node
+					if node.alloc then
+						spec:DeallocNode(node)
+						spec:BuildAllDependsAndPaths()
+						local dmg = calcFunc({ }, false).AverageDamage or 0
+						if dmg >= currentDamage then
+							currentDamage = dmg
+							t_remove(allocated, idx)
+							cascadeRemoved = cascadeRemoved + 1
+							cascadeChanged = true
+						else
+							spec:AllocNode(node)
+							spec:BuildAllDependsAndPaths()
+						end
+					end
+				end
+				if cascadeRemoved % 3 == 0 and cascadeRemoved > 0 then
+					self.build.autoAllocateProgress = string.format(
+						"Refine round %d/2: Cascading fine-tune... removed %d", refineRound, cascadeRemoved)
+					coroutine.yield()
+				end
+			end
+
+			if removedAny or cascadeRemoved > 0 then
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+			self.build.autoAllocateProgress = string.format(
+				"Refine round %d/2: %d nodes + %d cascaded removed", refineRound, #allocated, cascadeRemoved)
+			coroutine.yield()
+		end
+
+		-- ========================================================================
+		-- PHASE 3c: Re-evaluate already-allocated mastery effects.
+		-- ========================================================================
+		self.build.autoAllocateProgress = "Phase 3c: Re-evaluating mastery effects..."
+		coroutine.yield()
+		local masteryChanges = 0
+		local masteryIdx = 0
+		for _, entry in ipairs(allocated) do
+			local node = entry.node
+			if node.alloc and node.type == "Mastery" and node.masteryEffects and #node.masteryEffects > 0 then
+				local currentEffect = spec.masterySelections[node.id]
+				if currentEffect then
+					local baselineDamage = calcFunc({ }, false).AverageDamage or 0
+					local bestPower = 0
+					local bestEffect = currentEffect
+					for _, me in ipairs(node.masteryEffects) do
+						spec.masterySelections[node.id] = me.effect
+						spec:BuildAllDependsAndPaths()
+						local out = calcFunc({ }, false)
+						local power = (out.AverageDamage or 0) - baselineDamage
+						if power > bestPower then bestPower = power; bestEffect = me.effect end
+					end
+					if bestEffect ~= currentEffect then
+						spec.masterySelections[node.id] = bestEffect
+						masteryChanges = masteryChanges + 1
+					end
+					spec:BuildAllDependsAndPaths()
+				end
+			end
+			masteryIdx = masteryIdx + 1
+			if masteryIdx % 3 == 0 then
+				self.build.autoAllocateProgress = string.format(
+					"Phase 3c: Re-evaluating masteries... %d / %d", masteryIdx, #allocated)
+				coroutine.yield()
+			end
+		end
+
+		if masteryChanges > 0 then
+			spec:AddUndoState()
+			self.build.buildFlag = true
+		end
+		self.build.autoAllocateProgress = string.format(
+			"Phase 3c: Changed %d mastery effects", masteryChanges)
+		coroutine.yield()
+
+		-- Update currentDamage for swap optimisation
+		currentDamage = calcFunc({ }, false).AverageDamage or 0
+
+		-- ========================================================================
+		-- PHASE 3.5: Multi-round swap optimisation
+		-- Runs up to 3 rounds of weak->strong node replacement.
+		-- ========================================================================
+		local totalSwapAttempts = 0
+		local swapRoundsDone = 0
+
+		for swapRound = 1, 3 do
+			if #allocated <= 0 then break end
+
+			self.build.autoAllocateProgress = string.format(
+				"Phase 3.5 round %d/3: Swapping weak nodes...", swapRound)
+			coroutine.yield()
+
+			-- Collect allocated entries sorted by ratio ascending (worst first)
+			local allocatedOrder = { }
+			for _, entry in ipairs(allocated) do
+				if entry.node.alloc then
+					local cost = getNodeCost(entry.node)
+					if cost > 0 then
+						t_insert(allocatedOrder, {
+							entry = entry,
+							ratio = (entry.power or 0) / cost,
+						})
+					end
+				end
+			end
+			t_sort(allocatedOrder, function(a, b) return a.ratio < b.ratio end)
+
+			-- Build unallocated candidates from Phase 1 data
+			local unallocCands = { }
+			for _, cand in ipairs(candidates) do
+				if not cand.node.alloc then
+					local cost = getNodeCost(cand.node)
+					if cost > 0 then
+						t_insert(unallocCands, {
+							cand = cand,
+							cost = cost,
+							ratio = (cand.power or 0) / cost,
+						})
+					end
+				end
+			end
+			t_sort(unallocCands, function(a, b)
+				if a.ratio ~= b.ratio then return a.ratio > b.ratio end
+				return (a.cand.power or 0) > (b.cand.power or 0)
+			end)
+
+			local swapSuccesses = 0
+			local maxSwapAttempts = 10
+
+			for _, weak in ipairs(allocatedOrder) do
+				local weakNode = weak.entry.node
+				if not weakNode.alloc then break end
+				if swapSuccesses >= maxSwapAttempts then break end
+
+				-- Snapshot state before swap attempt
+				local allocSnapshot = { }
+				for id, n in pairs(spec.allocNodes) do
+					allocSnapshot[id] = n
+				end
+				local masterySnapshot = { }
+				for id, eid in pairs(spec.masterySelections) do
+					masterySnapshot[id] = eid
+				end
+
+				-- Deallocate weak node and note how many points are freed
+				local beforeAlloc = 0
+				for id, n in pairs(spec.allocNodes) do
+					if n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+						beforeAlloc = beforeAlloc + 1
+					end
+				end
+				spec:DeallocNode(weakNode)
+				spec:BuildAllDependsAndPaths()
+				local afterDealloc = 0
+				for id, n in pairs(spec.allocNodes) do
+					if n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+						afterDealloc = afterDealloc + 1
+					end
+				end
+				local freedPoints = beforeAlloc - afterDealloc
+
+				if freedPoints <= 0 then
+					-- Restore and skip
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+					goto continue_swap
+				end
+
+				-- Find the best unallocated candidate that fits in freed budget
+				local bestSwapCand = nil
+				for _, uc in ipairs(unallocCands) do
+					if not uc.cand.node.alloc and uc.cost <= freedPoints then
+						bestSwapCand = uc
+						break
+					end
+				end
+
+				if not bestSwapCand then
+					-- Nothing fits -- restore
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+					goto continue_swap
+				end
+
+				-- Allocate the replacement candidate
+				local replCand = bestSwapCand.cand
+				if replCand.node.type == "Mastery" and replCand.bestEffect then
+					spec:AllocNode(replCand.node)
+					spec.masterySelections[replCand.node.id] = replCand.bestEffect
+				else
+					spec:AllocNode(replCand.node)
+				end
+				spec:BuildAllDependsAndPaths()
+
+				-- Check if damage improved
+				local newDamage = calcFunc({ }, false).AverageDamage or 0
+				if newDamage > currentDamage then
+					currentDamage = newDamage
+					swapSuccesses = swapSuccesses + 1
+				else
+					-- Revert to pre-swap state
+					for id, n in pairs(spec.allocNodes) do
+						n.alloc = false
+						spec.allocNodes[id] = nil
+					end
+					for id, n in pairs(allocSnapshot) do
+						n.alloc = true
+						spec.allocNodes[id] = n
+					end
+					wipeTable(spec.masterySelections)
+					for id, eid in pairs(masterySnapshot) do
+						spec.masterySelections[id] = eid
+					end
+					spec:BuildAllDependsAndPaths()
+				end
+
+				if swapSuccesses % 3 == 0 then
+					self.build.autoAllocateProgress = string.format(
+						"Phase 3.5 round %d/3: %d swaps so far...", swapRound, swapSuccesses)
+					coroutine.yield()
+				end
+
+				::continue_swap::
+			end
+
+			if swapSuccesses > 0 then
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+
+			totalSwapAttempts = totalSwapAttempts + swapSuccesses
+			swapRoundsDone = swapRound
+
+			self.build.autoAllocateProgress = string.format(
+				"Phase 3.5 round %d/3: %d swaps", swapRound, swapSuccesses)
+			coroutine.yield()
+
+			if swapSuccesses == 0 then break end
+		end
+
+		self.build.autoAllocateProgress = string.format(
+			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
+		coroutine.yield()
+
+		-- ========================================================================
+		-- PHASE 5: Scan all unallocated nodes for missed strong nodes
+		-- ========================================================================
+		self.build.autoAllocateProgress = "Phase 5: Scanning for missed strong nodes..."
+		coroutine.yield()
+
+		local phase5Baseline = calcFunc({ }, true)
+		local phase5BaseDPS = phase5Baseline.CombinedDPS or phase5Baseline.AverageDamage or 0
+
+		-- Collect all unallocated non-socket, non-ascendancy nodes with a path
+		local phase5Cands = { }
+		for nodeId, node in pairs(spec.nodes) do
+			if not node.alloc and node.path and not node.ascendancyName and node.type ~= "Socket" then
+				if node.type == "Normal" or node.type == "Notable" or node.type == "Keystone" or node.type == "Mastery" then
+					t_insert(phase5Cands, node)
+				end
+			end
+		end
+
+		-- Score candidates by DPS boost (up to 20 evaluations)
+		local phase5Scored = { }
+		local phase5EvalCount = 0
+		local phase5MaxEval = 20
+
+		self.build.autoAllocateProgress = string.format(
+			"Phase 5: Evaluating %d unallocated nodes...", math.min(#phase5Cands, phase5MaxEval))
+		coroutine.yield()
+
+		for _, node in ipairs(phase5Cands) do
+			if phase5EvalCount >= phase5MaxEval then break end
+			local out = calcFunc({ addNodes = { [node] = true } }, true)
+			local dps = out.CombinedDPS or out.AverageDamage or 0
+			local boost = dps - phase5BaseDPS
+			if boost > 0 then
+				t_insert(phase5Scored, { node = node, boost = boost })
+			end
+			phase5EvalCount = phase5EvalCount + 1
+			if phase5EvalCount % 5 == 0 then
+				self.build.autoAllocateProgress = string.format(
+					"Phase 5: Evaluating... %d / %d", phase5EvalCount, phase5MaxEval)
+				coroutine.yield()
+			end
+		end
+		t_sort(phase5Scored, function(a, b) return a.boost > b.boost end)
+
+		local phase5HotCount = math.min(5, #phase5Scored)
+		local phase5Swaps = 0
+		local phase5MaxTotalSwaps = 5
+
+		if phase5HotCount > 0 then
+			-- Build weakest-allocated list
+			local phase5WeakOrder = { }
+			for _, entry in ipairs(allocated) do
+				if entry.node.alloc then
+					local cost = getNodeCost(entry.node)
+					if cost > 0 then
+						t_insert(phase5WeakOrder, { entry = entry, cost = cost, ratio = (entry.power or 0) / cost })
+					end
+				end
+			end
+			t_sort(phase5WeakOrder, function(a, b) return a.ratio < b.ratio end)
+			local phase5MaxWeak = math.min(10, #phase5WeakOrder)
+
+			self.build.autoAllocateProgress = string.format(
+				"Phase 5: Trying %d hot vs %d weak...", phase5HotCount, phase5MaxWeak)
+			coroutine.yield()
+
+			for hi = 1, phase5HotCount do
+				local hot = phase5Scored[hi]
+				if phase5Swaps >= phase5MaxTotalSwaps then break end
+				if not hot.node.alloc then
+					for wi = 1, phase5MaxWeak do
+						local weak = phase5WeakOrder[wi]
+						if phase5Swaps >= phase5MaxTotalSwaps then break end
+						if weak.entry.node.alloc and not hot.node.alloc then
+							local hotCost = getNodeCost(hot.node)
+							if hotCost > 0 and hotCost <= weak.cost + 1 then
+							-- Snapshot
+							local snap = { }
+							for id, n in pairs(spec.allocNodes) do
+								snap[id] = n
+							end
+							local masterySnap = { }
+							for id, eid in pairs(spec.masterySelections) do
+								masterySnap[id] = eid
+							end
+
+							-- Deallocate weak, check freed budget
+							local beforeDealloc = 0
+							for id, n in pairs(spec.allocNodes) do
+								if n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+								beforeDealloc = beforeDealloc + 1
+								end
+							end
+							spec:DeallocNode(weak.entry.node)
+							spec:BuildAllDependsAndPaths()
+							local afterDealloc = 0
+							for id, n in pairs(spec.allocNodes) do
+								if n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+								afterDealloc = afterDealloc + 1
+								end
+							end
+							local freedPoints = beforeDealloc - afterDealloc
+
+							if freedPoints > 0 and hotCost <= freedPoints then
+								spec:AllocNode(hot.node)
+								spec:BuildAllDependsAndPaths()
+								local newOut = calcFunc({ }, true)
+								local newDPS = newOut.CombinedDPS or newOut.AverageDamage or 0
+								if newDPS > phase5BaseDPS then
+									phase5BaseDPS = newDPS
+									phase5Swaps = phase5Swaps + 1
+									spec:AddUndoState()
+									self.build.buildFlag = true
+									self.build.autoAllocateProgress = string.format(
+										"Phase 5: Swap %d successful", phase5Swaps)
+									coroutine.yield()
+								else
+									-- Revert
+									for id, n in pairs(spec.allocNodes) do
+										n.alloc = false
+										spec.allocNodes[id] = nil
+									end
+									for id, n in pairs(snap) do
+										n.alloc = true
+										spec.allocNodes[id] = n
+									end
+									wipeTable(spec.masterySelections)
+									for id, eid in pairs(masterySnap) do
+										spec.masterySelections[id] = eid
+									end
+									spec:BuildAllDependsAndPaths()
+								end
+							else
+								-- Not enough budget freed, revert deallocation
+								for id, n in pairs(spec.allocNodes) do
+									n.alloc = false
+									spec.allocNodes[id] = nil
+								end
+								for id, n in pairs(snap) do
+									n.alloc = true
+									spec.allocNodes[id] = n
+								end
+								wipeTable(spec.masterySelections)
+								for id, eid in pairs(masterySnap) do
+									spec.masterySelections[id] = eid
+								end
+								spec:BuildAllDependsAndPaths()
+							end
+							end
+						end
+					end
+				end
+			end
+
+			if phase5Swaps > 0 then
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+		end
+
+		self.build.autoAllocateProgress = string.format(
+			"Phase 5: %d heatmap swaps", phase5Swaps)
+		coroutine.yield()
+
+		-- Check if overall damage improved; rollback if not
+		local finalDamage = calcFunc({ }, false).AverageDamage or 0
+		if finalDamage < emptyTreeDamage - 1 then
+			self.build.autoAllocateProgress = string.format(
+				"Rolling back: damage dropped from %d to %d", emptyTreeDamage, finalDamage)
+			coroutine.yield()
+			spec:RestoreUndoState(initialUndoState)
+			spec:BuildAllDependsAndPaths()
+			self.build.buildFlag = true
+			self.build.autoAllocateProgress = "Rolled back: tree restored to pre-optimization state"
+			coroutine.yield()
+		end
+
 		self.build.autoAllocateProgress = "Auto allocation complete!"
 		coroutine.yield()
 		self.build.autoAllocateProgress = nil
