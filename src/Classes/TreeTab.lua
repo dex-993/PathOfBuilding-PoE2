@@ -2414,6 +2414,7 @@ end
 
 -- Auto Allocate Tree
 function TreeTabClass:AutoAllocateTree()
+	if self.build.autoAllocateBuilder then return end
 	local spec = self.build.spec
 	local candidateCount = 0
 	for nodeId, node in pairs(spec.nodes) do
@@ -2421,13 +2422,29 @@ function TreeTabClass:AutoAllocateTree()
 			candidateCount = candidateCount + 1
 		end
 	end
-	self:AutoAllocateTreeConfirmed(candidateCount)
+	if candidateCount == 0 then return end
+	local controls = { }
+	local attributes = { "Strength", "Dexterity", "Intelligence" }
+	controls.attrSelect = new("DropDownControl", {"TOPLEFT",nil,"TOPLEFT"}, {225, 30, 100, 18}, attributes, function()
+		-- Show the tooltip note when selection changes
+	end)
+	controls.start = new("ButtonControl", nil, {-50, 65, 80, 20}, "Start", function()
+		spec.attributeIndex = controls.attrSelect.selIndex
+		main:ClosePopup()
+		self:AutoAllocateTreeConfirmed(candidateCount)
+	end)
+	controls.close = new("ButtonControl", nil, {50, 65, 80, 20}, "Cancel", function()
+		main:ClosePopup()
+	end)
+	controls.tooltip = new("LabelControl", nil, {0, 100, 0, 16},
+		"^8Choose the attribute type for pathing nodes.\n"..
+		"All attribute nodes on the path will use this selection.")
+	main:OpenPopup(450, 135, "Auto Allocate Tree - Attribute Selection", controls, "start")
 end
 
 function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 	if candidateCount == 0 then return end
 	if self.build.autoAllocateBuilder then return end
-	main:ClosePopup()
 	self.build.autoAllocateProgress = "Starting..."
 	self.build.autoAllocateBuilder = coroutine.create(function()
 		local spec = self.build.spec
@@ -3161,7 +3178,6 @@ end
 
 
 
--- Auto Allocate Jewels
 function TreeTabClass:AutoAllocateJewels()
 	if self.build.autoAllocateJewelsBuilder then return end
 	local spec = self.build.spec
@@ -3172,7 +3188,21 @@ function TreeTabClass:AutoAllocateJewels()
 		end
 	end
 	if totalCandidates == 0 then return end
-	self:AutoAllocateJewelsConfirmed(totalCandidates)
+	local controls = { }
+	local attributes = { "Strength", "Dexterity", "Intelligence" }
+	controls.attrSelect = new("DropDownControl", {"TOPLEFT",nil,"TOPLEFT"}, {225, 30, 100, 18}, attributes, nil)
+	controls.start = new("ButtonControl", nil, {-50, 65, 80, 20}, "Start", function()
+		spec.attributeIndex = controls.attrSelect.selIndex
+		main:ClosePopup()
+		self:AutoAllocateJewelsConfirmed(totalCandidates)
+	end)
+	controls.close = new("ButtonControl", nil, {50, 65, 80, 20}, "Cancel", function()
+		main:ClosePopup()
+	end)
+	controls.tooltip = new("LabelControl", nil, {0, 100, 0, 16},
+		"^8Choose the attribute type for pathing nodes.\n"..
+		"All attribute nodes on the path will use this selection.")
+	main:OpenPopup(450, 135, "Auto Allocate Jewels - Attribute Selection", controls, "start")
 end
 
 -- List of individual jewel mods to test for socket evaluation
@@ -3196,7 +3226,6 @@ local JEWEL_MOD_TEXTS = {
 
 function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 	if self.build.autoAllocateJewelsBuilder then return end
-	main:ClosePopup()
 	self.build.autoAllocateJewelsProgress = "Starting..."
 	self.build.autoAllocateJewelsBuilder = coroutine.create(function()
 		local spec = self.build.spec
