@@ -3495,6 +3495,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 		for i = 1, #candidates do
 			local cand = candidates[i]
+			if cand.power <= 0 then break end
 			if pointsUsed >= origNormal then break end
 			if not allocatedModKeys[cand.modKey] then
 				if not cand.node.alloc then
