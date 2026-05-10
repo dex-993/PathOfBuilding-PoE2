@@ -2449,13 +2449,11 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 	self.build.autoAllocateBuilder = coroutine.create(function()
 		local spec = self.build.spec
 
-		local origNormal = 0
-		for _, node in pairs(spec.allocNodes) do
-			if node.type ~= "ClassStart" and node.type ~= "AscendClassStart"
-			   and node.isFreeAllocate == nil and not node.ascendancyName then
-				origNormal = origNormal + 1
-			end
+		local totalPoints = (self.build.characterLevel - 1)
+		if self.build.acts and self.build.acts[self.build.maxActs] then
+			totalPoints = totalPoints + (self.build.acts[self.build.maxActs].questPoints or 0)
 		end
+		local origNormal = totalPoints
 		self.build.autoAllocateProgress = string.format(
 			"Level %d, %d points available...", self.build.characterLevel, origNormal)
 		coroutine.yield()
@@ -2491,57 +2489,8 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 			end
 		end
 
-		t_sort(candidates, function(a, b) return a.power > b.power end)
 
-		local positivePowerCount = 0
-		for _, c in ipairs(candidates) do
-			if c.power > 0 then positivePowerCount = positivePowerCount + 1 end
-		end
-
-		self.build.autoAllocateProgress = string.format(
-			"Phase 2: candidates=%d positivePower=%d", #candidates, positivePowerCount)
-		coroutine.yield()
-
-		local allocated = { }
-		local allocatedModKeys = { }
-		local pointsUsed = 0
-
-		for i = 1, math.min(origNormal, #candidates) do
-			local cand = candidates[i]
-			if cand.power <= 0 then break end
-			if not allocatedModKeys[cand.modKey] then
-				local newNodes = 0
-				if #cand.node.intuitiveLeapLikesAffecting > 0 then
-					local n = cand.node
-					if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
-						newNodes = 1
-					end
-				else
-					for _, pathNode in ipairs(cand.node.path) do
-						local n = pathNode
-						if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
-							newNodes = newNodes + 1
-						end
-					end
-				end
-				if pointsUsed + newNodes > origNormal then break end
-				spec:AllocNode(cand.node)
-				pointsUsed = pointsUsed + newNodes
-				t_insert(allocated, { node = cand.node, points = newNodes })
-				allocatedModKeys[cand.modKey] = true
-				if pointsUsed % 10 == 0 then
-					self.build.autoAllocateProgress = string.format(
-						"Phase 2: Allocating... %d / %d", pointsUsed, origNormal)
-					coroutine.yield()
-				end
-			end
-		end
-
-		spec:BuildAllDependsAndPaths()
-		spec:AddUndoState()
-		self.build.buildFlag = true
-		-- Helper: count unallocated non-essential nodes along a candidate's path
-		local function getNodeCost(node)
+				local function getNodeCost(node)
 			if #node.intuitiveLeapLikesAffecting > 0 then
 				local n = node
 				if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
@@ -2558,6 +2507,71 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 				end
 			end
 			return cost
+		end
+
+-- Pre-compute cost for each candidate
+		for _, cand in ipairs(candidates) do
+			cand.cost = getNodeCost(cand.node)
+		end
+		t_sort(candidates, function(a, b)
+			local ratioA = a.cost > 0 and (a.power / a.cost) or a.power
+			local ratioB = b.cost > 0 and (b.power / b.cost) or b.power
+			if ratioA ~= ratioB then return ratioA > ratioB end
+			return a.power > b.power
+		end)
+
+
+
+		local allocated = { }
+		local allocatedModKeys = { }
+		local pointsUsed = 0
+
+		for i = 1, #candidates do
+			local cand = candidates[i]
+			if cand.power <= 0 then break end
+			if pointsUsed >= origNormal then break end
+			if not allocatedModKeys[cand.modKey] then
+				local newNodes = 0
+				if #cand.node.intuitiveLeapLikesAffecting > 0 then
+					local n = cand.node
+					if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+						newNodes = 1
+					end
+				else
+					for _, pathNode in ipairs(cand.node.path) do
+						local n = pathNode
+						if not n.alloc and n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and not n.ascendancyName then
+							newNodes = newNodes + 1
+						end
+					end
+				end
+				if pointsUsed + newNodes <= origNormal then
+					spec:AllocNode(cand.node)
+					pointsUsed = pointsUsed + newNodes
+					t_insert(allocated, { node = cand.node, points = newNodes })
+					allocatedModKeys[cand.modKey] = true
+					if pointsUsed % 10 == 0 then
+						self.build.autoAllocateProgress = string.format(
+							"Phase 2: Allocating... %d / %d", pointsUsed, origNormal)
+						coroutine.yield()
+					end
+				end
+			end
+		end
+
+		spec:BuildAllDependsAndPaths()
+		spec:AddUndoState()
+		self.build.buildFlag = true
+
+		-- Helper: count allocated normal nodes
+		local function countAlloc()
+			local c = 0
+			for _, n in pairs(spec.allocNodes) do
+				if n.type ~= "ClassStart" and n.type ~= "AscendClassStart" and n.isFreeAllocate == nil and not n.ascendancyName then
+					c = c + 1
+				end
+			end
+			return c
 		end
 
 		-- ========================================================================
@@ -2900,6 +2914,74 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
 		coroutine.yield()
+
+
+		-- ========================================================================
+		-- BUDGET REFILL: After Phase 3/Refine/3c/3.5, scan unallocated candidates
+		-- with fresh DPS evaluation and allocate best fitting freed budget.
+		-- ========================================================================
+		self.build.autoAllocateProgress = "Budget Refill: Scanning for refill candidates..."
+		coroutine.yield()
+
+		local refillBudget = origNormal - countAlloc()
+		if refillBudget > 0 then
+			-- Build fresh candidate list from current tree state
+			local refillCands = { }
+			local refillCount = 0
+			local refillMax = 50
+			for _, cand in ipairs(candidates) do
+				if not cand.node.alloc and not allocatedModKeys[cand.modKey] then
+					if refillCount >= refillMax then break end
+					local cost = getNodeCost(cand.node)
+					if cost > 0 and cost <= refillBudget then
+						local out = calcFunc({ addNodes = { [cand.node] = true } }, false)
+						local freshPower = (out.AverageDamage or 0) - currentDamage
+						if freshPower > 0 then
+							t_insert(refillCands, {
+								cand = cand,
+								cost = cost,
+								power = freshPower,
+								ratio = freshPower / cost,
+							})
+						end
+						refillCount = refillCount + 1
+					end
+				end
+			end
+			t_sort(refillCands, function(a, b)
+				if a.ratio ~= b.ratio then return a.ratio > b.ratio end
+				return a.power > b.power
+			end)
+
+			local refilled = 0
+			for _, rc in ipairs(refillCands) do
+				if refillBudget <= 0 then break end
+				if not rc.cand.node.alloc and rc.cost <= refillBudget then
+					if rc.cand.node.type == "Mastery" and rc.cand.bestEffect then
+						spec:AllocNode(rc.cand.node)
+						spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+					else
+						spec:AllocNode(rc.cand.node)
+					end
+					refillBudget = refillBudget - rc.cost
+					refilled = refilled + 1
+					allocatedModKeys[rc.cand.modKey] = true
+					t_insert(allocated, { node = rc.cand.node, points = rc.cost })
+				end
+			end
+
+			if refilled > 0 then
+				spec:BuildAllDependsAndPaths()
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+
+			self.build.autoAllocateProgress = string.format(
+				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
+			coroutine.yield()
+		end
+
+		currentDamage = calcFunc({ }, false).AverageDamage or 0
 
 		-- ========================================================================
 		-- PHASE 5: Scan all unallocated nodes for missed strong nodes
@@ -3244,7 +3326,11 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			return c
 		end
 
-		local origNormal = countNormalAlloc()
+		local totalPoints = (self.build.characterLevel - 1)
+		if self.build.acts and self.build.acts[self.build.maxActs] then
+			totalPoints = totalPoints + (self.build.acts[self.build.maxActs].questPoints or 0)
+		end
+		local origNormal = totalPoints
 
 		-- Reset tree to empty baseline (class starts kept)
 		wipeTable(spec.hashOverrides)
@@ -3353,13 +3439,11 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 						reevalCount = reevalCount + 1
 					end
 					local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
-					if power > 0 then
-						t_insert(candidates, {
-							node = node,
-							power = power,
-							modKey = node.modKey,
-						})
-					end
+					t_insert(candidates, {
+						node = node,
+						power = power,
+						modKey = node.modKey,
+					})
 				end
 			end
 			nodeIndex = nodeIndex + 1
@@ -3397,62 +3481,41 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		local pointsUsed = 0
 		local allocated = { }  -- the "head" (target) nodes allocated
 		local allocatedModKeys = { }
-		local keptCand = { }
+
+		-- Pre-compute cost and sort by DPS/point (same as Tree version)
 		for _, cand in ipairs(candidates) do
-			keptCand[#keptCand + 1] = cand
+			cand.cost = getNodeCost(cand.node)
 		end
+		t_sort(candidates, function(a, b)
+			local ratioA = a.cost > 0 and (a.power / a.cost) or a.power
+			local ratioB = b.cost > 0 and (b.power / b.cost) or b.power
+			if ratioA ~= ratioB then return ratioA > ratioB end
+			return a.power > b.power
+		end)
 
-		local function tryAllocCandidate(cand)
-			if cand.node.type == "Mastery" and cand.bestEffect then
-				spec:AllocNode(cand.node)
-				spec.masterySelections[cand.node.id] = cand.bestEffect
-			else
-				spec:AllocNode(cand.node)
-			end
-		end
-
-		local roundCount = 0
-		while pointsUsed < origNormal and #keptCand > 0 do
-			spec:BuildAllDependsAndPaths()
-
-			local bestIdx = nil
-			local bestRatio = -1
-			local bestPower = -1
-			local bestCost = 0
-
-			for idx, cand in ipairs(keptCand) do
-				if not allocatedModKeys[cand.modKey] then
-					local node = cand.node
-					if not node.alloc then
-						local cost = getNodeCost(node)
-						if cost > 0 and pointsUsed + cost <= origNormal then
-							local ratio = cand.power / cost
-							if ratio > bestRatio or (ratio == bestRatio and cand.power > bestPower) then
-								bestRatio = ratio
-								bestPower = cand.power
-								bestIdx = idx
-								bestCost = cost
-							end
+		for i = 1, #candidates do
+			local cand = candidates[i]
+			if pointsUsed >= origNormal then break end
+			if not allocatedModKeys[cand.modKey] then
+				if not cand.node.alloc then
+					local cost = getNodeCost(cand.node)
+					if cost > 0 and pointsUsed + cost <= origNormal then
+						if cand.node.type == "Mastery" and cand.bestEffect then
+							spec:AllocNode(cand.node)
+							spec.masterySelections[cand.node.id] = cand.bestEffect
+						else
+							spec:AllocNode(cand.node)
+						end
+						pointsUsed = pointsUsed + cost
+						t_insert(allocated, cand)
+						allocatedModKeys[cand.modKey] = true
+						if pointsUsed % 10 == 0 then
+							self.build.autoAllocateJewelsProgress = string.format(
+								"Phase 2: Allocating... %d / %d", pointsUsed, origNormal)
+							coroutine.yield()
 						end
 					end
 				end
-			end
-
-			if not bestIdx then break end
-
-			local cand = keptCand[bestIdx]
-			tryAllocCandidate(cand)
-			pointsUsed = pointsUsed + bestCost
-			t_insert(allocated, cand)
-			allocatedModKeys[cand.modKey] = true
-			t_remove(keptCand, bestIdx)
-
-			roundCount = roundCount + 1
-			if roundCount % 3 == 0 then
-				local pct = m_floor(pointsUsed / origNormal * 100)
-				self.build.autoAllocateJewelsProgress = string.format(
-					"Phase 2: Allocating... %d / %d (%d%%)", pointsUsed, origNormal, pct)
-				coroutine.yield()
 			end
 		end
 
@@ -3822,6 +3885,73 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 				cascadeRemoved, countNormalAlloc())
 		coroutine.yield()
 
+
+		-- ========================================================================
+		-- BUDGET REFILL: After Phase 3/3b, scan unallocated candidates
+		-- with fresh DPS evaluation and allocate best fitting freed budget.
+		-- ========================================================================
+		self.build.autoAllocateJewelsProgress = "Budget Refill: Scanning for refill candidates..."
+		coroutine.yield()
+
+		local refillBudget = origNormal - countNormalAlloc()
+		if refillBudget > 0 then
+			local refillCands = { }
+			local refillCount = 0
+			local refillMax = 50
+			for _, cand in ipairs(candidates) do
+				if not cand.node.alloc and not allocatedModKeys[cand.modKey] then
+					if refillCount >= refillMax then break end
+					local cost = getNodeCost(cand.node)
+					if cost > 0 and cost <= refillBudget then
+						local out = calcFunc({ addNodes = { [cand.node] = true } }, false)
+						local freshPower = (out.AverageDamage or 0) - currentDamage
+						if freshPower > 0 then
+							t_insert(refillCands, {
+								cand = cand,
+								cost = cost,
+								power = freshPower,
+								ratio = freshPower / cost,
+							})
+						end
+						refillCount = refillCount + 1
+					end
+				end
+			end
+			t_sort(refillCands, function(a, b)
+				if a.ratio ~= b.ratio then return a.ratio > b.ratio end
+				return a.power > b.power
+			end)
+
+			local refilled = 0
+			for _, rc in ipairs(refillCands) do
+				if refillBudget <= 0 then break end
+				if not rc.cand.node.alloc and rc.cost <= refillBudget then
+					if rc.cand.node.type == "Mastery" and rc.cand.bestEffect then
+						spec:AllocNode(rc.cand.node)
+						spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+					else
+						spec:AllocNode(rc.cand.node)
+					end
+					refillBudget = refillBudget - rc.cost
+					refilled = refilled + 1
+					allocatedModKeys[rc.cand.modKey] = true
+					t_insert(allocated, rc.cand)
+				end
+			end
+
+			if refilled > 0 then
+				spec:BuildAllDependsAndPaths()
+				spec:AddUndoState()
+				self.build.buildFlag = true
+			end
+
+			self.build.autoAllocateJewelsProgress = string.format(
+				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
+			coroutine.yield()
+		end
+
+		currentDamage = calcFunc({ }, false).AverageDamage or 0
+
 		-- ========================================================================
 		-- PHASE 3c: Re-evaluate already-allocated mastery effects.
 		-- Mastery effects were selected in Phase 1 from the empty tree, but
@@ -3910,7 +4040,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 			-- Build best unallocated candidates list (sorted by ratio DESC)
 			local unallocCands = { }
-			for _, cand in ipairs(keptCand) do
+			for _, cand in ipairs(candidates) do
 				if not cand.node.alloc then
 					local cost = getNodeCost(cand.node)
 					if cost > 0 then

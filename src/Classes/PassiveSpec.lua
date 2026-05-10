@@ -796,10 +796,10 @@ function PassiveSpecClass:ConnectToClass(classId)
 	return true
 end
 
--- Clear the allocated status of all non-class-start nodes
+-- Clear the allocated status of all non-class-start nodes and ascendancy nodes
 function PassiveSpecClass:ResetNodes()
 	for id, node in pairs(self.nodes) do
-		if node.type ~= "ClassStart" and node.type ~= "AscendClassStart" then
+		if node.type ~= "ClassStart" and node.type ~= "AscendClassStart" and not node.ascendancyName then
 			node.alloc = false
 			self.allocNodes[id] = nil
 		end
