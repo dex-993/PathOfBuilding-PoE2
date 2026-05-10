@@ -3894,6 +3894,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = "Budget Refill: Scanning for refill candidates..."
 		coroutine.yield()
 
+		currentDamage = calcFunc({ }, false).AverageDamage or 0
 		local refillBudget = origNormal - countNormalAlloc()
 		if refillBudget > 0 then
 			local refillCands = { }
