@@ -3559,7 +3559,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 		for idx, entry in ipairs(allocated) do
 			local node = entry.node
-			if node.alloc then
+			if node.alloc and node.type ~= "Socket" then
 				-- Snapshot current state (DeallocNode cascades to dependents)
 				local allocSnapshot = { }
 				for id, n in pairs(spec.allocNodes) do
@@ -3797,7 +3797,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 				for idx, entry in ipairs(rpAllocated) do
 					local node = entry.node
-					if node.alloc then
+					if node.alloc and node.type ~= "Socket" then
 						local allocSnapshot = { }
 						for id_, n_ in pairs(spec.allocNodes) do
 							allocSnapshot[id_] = n_
@@ -3858,7 +3858,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			for idx = #allocated, 1, -1 do
 				local entry = allocated[idx]
 				local node = entry.node
-				if node.alloc then
+				if node.alloc and node.type ~= "Socket" then
 					local allocSnapshot = { }
 					for id_, n_ in pairs(spec.allocNodes) do
 						allocSnapshot[id_] = n_
