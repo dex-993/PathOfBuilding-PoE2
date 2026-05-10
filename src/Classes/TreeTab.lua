@@ -3273,7 +3273,7 @@ function TreeTabClass:AutoAllocateJewels()
 	local spec = self.build.spec
 	local totalCandidates = 0
 	for nodeId, node in pairs(spec.nodes) do
-		if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" then
+		if not node.alloc and not node.ascendancyName and node.path then
 			totalCandidates = totalCandidates + 1
 		end
 	end
@@ -3350,6 +3350,53 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		local baseOutput = calcFunc({ }, false)
 		local baselineDamage = baseOutput.AverageDamage or 0
 
+		-- Precompute best rare jewel DPS boost for socket valuation in Phase 1
+		local bestRareJewelBoost = 0
+		local refSocketNode = nil
+		for nodeId, node in pairs(spec.nodes) do
+			if node.type == "Socket" and not node.ascendancyName and node.path then
+				refSocketNode = node
+				break
+			end
+		end
+		if refSocketNode then
+			local modBoosts = { }
+			for _, modText in ipairs(JEWEL_MOD_TEXTS) do
+				local raw = "Rarity: MAGIC\nRuby\nImplicits: 0\n" .. modText
+				local jewel = new("Item", raw)
+				if jewel and jewel.base then
+					local override = {
+						addNodes = { [refSocketNode] = true },
+						repSlotName = "Jewel " .. refSocketNode.id,
+						repItem = jewel,
+					}
+					local out = calcFunc(override, false)
+					local boost = (out.AverageDamage or 0) - baselineDamage
+					if boost > 0 then
+						t_insert(modBoosts, { text = modText, boost = boost })
+					end
+				end
+			end
+			t_sort(modBoosts, function(a, b) return a.boost > b.boost end)
+			local templateMods = { }
+			for i = 1, math.min(4, #modBoosts) do
+				t_insert(templateMods, modBoosts[i].text)
+			end
+			if #templateMods > 0 then
+				local refRaw = "Rarity: RARE\nOptimal Jewel\nRuby\nImplicits: 0\n" .. t_concat(templateMods, "\n")
+				local jewel = new("Item", refRaw)
+				if jewel and jewel.base then
+					local override = {
+						addNodes = { [refSocketNode] = true },
+						repSlotName = "Jewel " .. refSocketNode.id,
+						repItem = jewel,
+					}
+					local out = calcFunc(override, false)
+					bestRareJewelBoost = (out.AverageDamage or 0) - baselineDamage
+				end
+			end
+		end
+
 		-- Helper: count unallocated non-essential nodes along a candidate's path
 		local function getNodeCost(node)
 			if #node.intuitiveLeapLikesAffecting > 0 then
@@ -3386,17 +3433,27 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		local reevalCount = 0
 
 		for nodeId, node in pairs(spec.nodes) do
-			if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" and node.type ~= "Socket" then
-				if not cache[node.modKey] then
-					cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
-					reevalCount = reevalCount + 1
+			if not node.alloc and not node.ascendancyName and node.path then
+				if node.type == "Socket" then
+					if bestRareJewelBoost > 0 then
+						t_insert(candidates, {
+							node = node,
+							power = bestRareJewelBoost,
+							modKey = "socket_" .. tostring(nodeId),
+						})
+					end
+				elseif node.modKey ~= "" then
+					if not cache[node.modKey] then
+						cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+						reevalCount = reevalCount + 1
+					end
+					local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
+					t_insert(candidates, {
+						node = node,
+						power = power,
+						modKey = node.modKey,
+					})
 				end
-				local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
-				t_insert(candidates, {
-					node = node,
-					power = power,
-					modKey = node.modKey,
-				})
 			end
 			nodeIndex = nodeIndex + 1
 			if nodeIndex % yieldEvery == 0 then
