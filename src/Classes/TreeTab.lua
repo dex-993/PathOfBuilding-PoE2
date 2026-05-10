@@ -2562,6 +2562,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		spec:BuildAllDependsAndPaths()
 		spec:AddUndoState()
 		self.build.buildFlag = true
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase2: nodes=", #allocated, " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Helper: count allocated normal nodes
 		local function countAlloc()
@@ -2607,6 +2608,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3: Fine-tuned, %d nodes remain", #allocated)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase3: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- REFINEMENT LOOP: re-check allocations after tree state changes
@@ -2678,6 +2680,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 				"Refine round %d/2: %d nodes + %d cascaded removed", refineRound, #allocated, cascadeRemoved)
 			coroutine.yield()
 		end
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Refine: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3c: Re-evaluate already-allocated mastery effects.
@@ -2723,6 +2726,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3c: Changed %d mastery effects", masteryChanges)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase3c: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Update currentDamage for swap optimisation
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -2914,6 +2918,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase35: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 
 		-- ========================================================================
@@ -2979,6 +2984,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 			self.build.autoAllocateProgress = string.format(
 				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
 			coroutine.yield()
+			local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Refill: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		end
 
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -3147,6 +3153,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 5: %d heatmap swaps", phase5Swaps)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase5: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Check if overall damage improved; rollback if not
 		local finalDamage = calcFunc({ }, false).AverageDamage or 0
@@ -3162,6 +3169,7 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		end
 
 		self.build.autoAllocateProgress = "Auto allocation complete!"
+		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Final: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		coroutine.yield()
 		self.build.autoAllocateProgress = nil
 		self.build.autoAllocateBuilder = nil
@@ -3527,6 +3535,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 2: %d nodes allocated using %d points", #allocated, countNormalAlloc())
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase2: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3: Fine-tuning — remove each allocated node and check if damage
@@ -3588,6 +3597,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3: Fine-tuned, %d nodes remain", countNormalAlloc())
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- REFINEMENT LOOP: Re-evaluate from the current tree, allocate remaining
@@ -3823,6 +3833,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 				self.build.buildFlag = true
 			end
 		end -- for refineRound
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Refine: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3b: Cascading fine-tune -- try removing each allocated node;
@@ -3885,6 +3896,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			"Phase 3b: Removed %d redundant nodes, %d remain",
 				cascadeRemoved, countNormalAlloc())
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3b: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 
 		-- ========================================================================
@@ -3950,6 +3962,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			self.build.autoAllocateJewelsProgress = string.format(
 				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
 			coroutine.yield()
+			local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Refill: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		end
 
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -4006,6 +4019,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3c: Changed %d mastery effects", masteryChanges)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3c: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Update currentDamage for Phase 3.5 swap optimisation
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -4201,6 +4215,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase35: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		-- ========================================================================
 		-- PHASE 4: Allocate reachable sockets (with leftover budget), then
 		-- find and insert the best jewels.
@@ -4441,6 +4456,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		end
 
 		-- ========================================================================
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase4: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		-- PHASE 5: Heatmap-inspired final optimisation
 		-- Scan all unallocated nodes for strong nodes missed by earlier phases.
 		-- ========================================================================
@@ -4599,11 +4615,13 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 5: %d heatmap swaps", phase5Swaps)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase5: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		local elapsed = m_floor((os.clock() - startTime) * 10) / 10
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Done: %d nodes + %d jewels optimized (%.1fs)",
 			countNormalAlloc(), socketCount, elapsed)
 		coroutine.yield()
+		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Final: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		self.build.autoAllocateJewelsProgress = nil
 		self.build.autoAllocateJewelsBuilder = nil
 	end)
