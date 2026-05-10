@@ -2562,7 +2562,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		spec:BuildAllDependsAndPaths()
 		spec:AddUndoState()
 		self.build.buildFlag = true
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase2: nodes=", #allocated, " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Helper: count allocated normal nodes
 		local function countAlloc()
@@ -2608,7 +2607,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3: Fine-tuned, %d nodes remain", #allocated)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase3: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- REFINEMENT LOOP: re-check allocations after tree state changes
@@ -2680,7 +2678,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 				"Refine round %d/2: %d nodes + %d cascaded removed", refineRound, #allocated, cascadeRemoved)
 			coroutine.yield()
 		end
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Refine: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3c: Re-evaluate already-allocated mastery effects.
@@ -2726,7 +2723,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3c: Changed %d mastery effects", masteryChanges)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase3c: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Update currentDamage for swap optimisation
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -2861,9 +2857,13 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 
 				-- Allocate the replacement candidate
 				local replCand = bestSwapCand.cand
-				if replCand.node.type == "Mastery" and replCand.bestEffect then
+				if replCand.node.type == "Mastery" then
 					spec:AllocNode(replCand.node)
-					spec.masterySelections[replCand.node.id] = replCand.bestEffect
+					if replCand.bestEffect then
+						spec.masterySelections[replCand.node.id] = replCand.bestEffect
+					elseif replCand.node.masteryEffects and #replCand.node.masteryEffects > 0 then
+						spec.masterySelections[replCand.node.id] = replCand.node.masteryEffects[1].effect
+					end
 				else
 					spec:AllocNode(replCand.node)
 				end
@@ -2918,7 +2918,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase35: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 
 		-- ========================================================================
@@ -2962,9 +2961,13 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 			for _, rc in ipairs(refillCands) do
 				if refillBudget <= 0 then break end
 				if not rc.cand.node.alloc and rc.cost <= refillBudget then
-					if rc.cand.node.type == "Mastery" and rc.cand.bestEffect then
+					if rc.cand.node.type == "Mastery" then
 						spec:AllocNode(rc.cand.node)
-						spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+						if rc.cand.bestEffect then
+							spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+						elseif rc.cand.node.masteryEffects and #rc.cand.node.masteryEffects > 0 then
+							spec.masterySelections[rc.cand.node.id] = rc.cand.node.masteryEffects[1].effect
+						end
 					else
 						spec:AllocNode(rc.cand.node)
 					end
@@ -2984,7 +2987,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 			self.build.autoAllocateProgress = string.format(
 				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
 			coroutine.yield()
-			local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Refill: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		end
 
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -3153,7 +3155,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		self.build.autoAllocateProgress = string.format(
 			"Phase 5: %d heatmap swaps", phase5Swaps)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Phase5: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Check if overall damage improved; rollback if not
 		local finalDamage = calcFunc({ }, false).AverageDamage or 0
@@ -3169,7 +3170,6 @@ function TreeTabClass:AutoAllocateTreeConfirmed(candidateCount)
 		end
 
 		self.build.autoAllocateProgress = "Auto allocation complete!"
-		local _d = io.open("debug_compare.txt", "a"); _d:write("TREE Final: nodes=", countAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		coroutine.yield()
 		self.build.autoAllocateProgress = nil
 		self.build.autoAllocateBuilder = nil
@@ -3386,73 +3386,17 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		local reevalCount = 0
 
 		for nodeId, node in pairs(spec.nodes) do
-			local isMastery = node.type == "Mastery"
-			-- Skip sockets (handled in Phase 4), include masteries
-			if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= ""
-			   and node.type ~= "Socket" then
-				if isMastery then
-					-- Mastery: allocate, try each possible effect, pick the best one
-					if node.masteryEffects and #node.masteryEffects > 0 then
-						-- Snapshot: allocate the mastery, try each effect, then restore
-						local allocSnapshot = { }
-						for id_, n_ in pairs(spec.allocNodes) do
-							allocSnapshot[id_] = n_
-						end
-						local masterySnapshot = { }
-						for id_, eid_ in pairs(spec.masterySelections) do
-							masterySnapshot[id_] = eid_
-						end
-
-						spec:AllocNode(node)
-
-						local bestPower = 0
-						local bestEffect = nil
-						for _, me in ipairs(node.masteryEffects) do
-							local effectId = me.effect
-							spec.masterySelections[node.id] = effectId
-							spec:BuildAllDependsAndPaths()
-							local out = calcFunc({ }, false)
-							local power = (out.AverageDamage or 0) - baselineDamage
-							if power > bestPower then
-								bestPower = power
-								bestEffect = effectId
-							end
-						end
-
-						-- Restore snapshot (full state rollback)
-						for id_, n_ in pairs(spec.allocNodes) do
-							if not allocSnapshot[id_] then
-								n_.alloc = false
-								spec.allocNodes[id_] = nil
-							end
-						end
-						wipeTable(spec.masterySelections)
-						for id_, eid_ in pairs(masterySnapshot) do
-							spec.masterySelections[id_] = eid_
-						end
-						spec:BuildAllDependsAndPaths()
-
-						if bestPower > 0 and bestEffect then
-							t_insert(candidates, {
-								node = node,
-								power = bestPower,
-								modKey = node.modKey,
-								bestEffect = bestEffect,
-							})
-						end
-					end
-				else
-					if not cache[node.modKey] then
-						cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
-						reevalCount = reevalCount + 1
-					end
-					local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
-					t_insert(candidates, {
-						node = node,
-						power = power,
-						modKey = node.modKey,
-					})
+			if not node.alloc and not node.ascendancyName and node.path and node.modKey ~= "" and node.type ~= "Socket" then
+				if not cache[node.modKey] then
+					cache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+					reevalCount = reevalCount + 1
 				end
+				local power = (cache[node.modKey].AverageDamage or 0) - baselineDamage
+				t_insert(candidates, {
+					node = node,
+					power = power,
+					modKey = node.modKey,
+				})
 			end
 			nodeIndex = nodeIndex + 1
 			if nodeIndex % yieldEvery == 0 then
@@ -3509,12 +3453,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 				if not cand.node.alloc then
 					local cost = getNodeCost(cand.node)
 					if cost > 0 and pointsUsed + cost <= origNormal then
-						if cand.node.type == "Mastery" and cand.bestEffect then
-							spec:AllocNode(cand.node)
-							spec.masterySelections[cand.node.id] = cand.bestEffect
-						else
-							spec:AllocNode(cand.node)
-						end
+						spec:AllocNode(cand.node)
 						pointsUsed = pointsUsed + cost
 						t_insert(allocated, cand)
 						allocatedModKeys[cand.modKey] = true
@@ -3528,6 +3467,19 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			end
 		end
 
+		-- Allocate socket nodes (excluded from Phase 1, needed for Phase 4 jewel insertion)
+		local spareSockets = m_max(0, origNormal - countNormalAlloc())
+		for nodeId, node in pairs(spec.nodes) do
+			if not node.alloc and node.type == "Socket" and not node.ascendancyName then
+				local cost = getNodeCost(node)
+				if cost > 0 and cost <= spareSockets then
+					spec:AllocNode(node)
+					pointsUsed = pointsUsed + cost
+					spareSockets = spareSockets - cost
+					t_insert(allocated, { node = node, points = cost, power = 0 })
+				end
+			end
+		end
 		spec:BuildAllDependsAndPaths()
 		spec:AddUndoState()
 		self.build.buildFlag = true
@@ -3535,7 +3487,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 2: %d nodes allocated using %d points", #allocated, countNormalAlloc())
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase2: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3: Fine-tuning — remove each allocated node and check if damage
@@ -3597,7 +3548,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3: Fine-tuned, %d nodes remain", countNormalAlloc())
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- REFINEMENT LOOP: Re-evaluate from the current tree, allocate remaining
@@ -3666,18 +3616,18 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 								})
 							end
 						end
-					end
-				else
-					if not roundCache[node.modKey] then
-						roundCache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
-					end
-					local power = (roundCache[node.modKey].AverageDamage or 0) - currentDamage
-					if power > 0 then
-						t_insert(roundCands, {
-							node = node,
-							power = power,
-							modKey = node.modKey,
-						})
+					else
+						if not roundCache[node.modKey] then
+							roundCache[node.modKey] = calcFunc({ addNodes = { [node] = true } }, false)
+						end
+						local power = (roundCache[node.modKey].AverageDamage or 0) - currentDamage
+						if power > 0 then
+							t_insert(roundCands, {
+								node = node,
+								power = power,
+								modKey = node.modKey,
+							})
+						end
 					end
 				end
 				rnIdx = rnIdx + 1
@@ -3833,11 +3783,11 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 				self.build.buildFlag = true
 			end
 		end -- for refineRound
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Refine: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- ========================================================================
 		-- PHASE 3b: Cascading fine-tune -- try removing each allocated node;
 		-- some early-allocated nodes may have been made redundant by later ones.
+		-- Repeats until no more removals (multi-pass, matching Tree behavior).
 		-- ========================================================================
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3b: Cascading fine-tune %d nodes...", #allocated)
@@ -3845,45 +3795,52 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 		local cascadeDamage = calcFunc({ }, false).AverageDamage or 0
 		local cascadeRemoved = 0
-
-		for idx, entry in ipairs(allocated) do
-			local node = entry.node
-			if node.alloc then
-				local allocSnapshot = { }
-				for id_, n_ in pairs(spec.allocNodes) do
-					allocSnapshot[id_] = n_
-				end
-				local masterySnapshot = { }
-				for id_, eid_ in pairs(spec.masterySelections) do
-					masterySnapshot[id_] = eid_
-				end
-
-				spec:DeallocNode(node)
-				spec:BuildAllDependsAndPaths()
-				local newDamage = calcFunc({ }, false).AverageDamage or 0
-				if newDamage >= cascadeDamage then
-					cascadeDamage = newDamage
-					cascadeRemoved = cascadeRemoved + 1
-				else
+		local cascadeChanged = true
+		while cascadeChanged do
+			cascadeChanged = false
+			for idx = #allocated, 1, -1 do
+				local entry = allocated[idx]
+				local node = entry.node
+				if node.alloc then
+					local allocSnapshot = { }
 					for id_, n_ in pairs(spec.allocNodes) do
-						n_.alloc = false
-						spec.allocNodes[id_] = nil
+						allocSnapshot[id_] = n_
 					end
-					for id_, n_ in pairs(allocSnapshot) do
-						n_.alloc = true
-						spec.allocNodes[id_] = n_
+					local masterySnapshot = { }
+					for id_, eid_ in pairs(spec.masterySelections) do
+						masterySnapshot[id_] = eid_
 					end
-					wipeTable(spec.masterySelections)
-					for id_, eid_ in pairs(masterySnapshot) do
-						spec.masterySelections[id_] = eid_
-					end
+
+					spec:DeallocNode(node)
 					spec:BuildAllDependsAndPaths()
+					local newDamage = calcFunc({ }, false).AverageDamage or 0
+					if newDamage >= cascadeDamage then
+						cascadeDamage = newDamage
+						t_remove(allocated, idx)
+						cascadeRemoved = cascadeRemoved + 1
+						cascadeChanged = true
+					else
+						-- Restore full snapshot
+						for id_, n_ in pairs(spec.allocNodes) do
+							n_.alloc = false
+							spec.allocNodes[id_] = nil
+						end
+						for id_, n_ in pairs(allocSnapshot) do
+							n_.alloc = true
+							spec.allocNodes[id_] = n_
+						end
+						wipeTable(spec.masterySelections)
+						for id_, eid_ in pairs(masterySnapshot) do
+							spec.masterySelections[id_] = eid_
+						end
+						spec:BuildAllDependsAndPaths()
+					end
 				end
-			end
-			if idx % 5 == 0 then
-				self.build.autoAllocateJewelsProgress = string.format(
-					"Phase 3b: Cascading... %d / %d (removed %d)", idx, #allocated, cascadeRemoved)
-				coroutine.yield()
+				if idx % 5 == 0 then
+					self.build.autoAllocateJewelsProgress = string.format(
+						"Phase 3b: Cascading... %d / %d (removed %d)", idx, #allocated, cascadeRemoved)
+					coroutine.yield()
+				end
 			end
 		end
 
@@ -3896,7 +3853,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			"Phase 3b: Removed %d redundant nodes, %d remain",
 				cascadeRemoved, countNormalAlloc())
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3b: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 
 		-- ========================================================================
@@ -3940,9 +3896,13 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			for _, rc in ipairs(refillCands) do
 				if refillBudget <= 0 then break end
 				if not rc.cand.node.alloc and rc.cost <= refillBudget then
-					if rc.cand.node.type == "Mastery" and rc.cand.bestEffect then
+					if rc.cand.node.type == "Mastery" then
 						spec:AllocNode(rc.cand.node)
-						spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+						if rc.cand.bestEffect then
+							spec.masterySelections[rc.cand.node.id] = rc.cand.bestEffect
+						elseif rc.cand.node.masteryEffects and #rc.cand.node.masteryEffects > 0 then
+							spec.masterySelections[rc.cand.node.id] = rc.cand.node.masteryEffects[1].effect
+						end
 					else
 						spec:AllocNode(rc.cand.node)
 					end
@@ -3962,7 +3922,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			self.build.autoAllocateJewelsProgress = string.format(
 				"Budget Refill: Added %d nodes, %d points used", refilled, origNormal - refillBudget)
 			coroutine.yield()
-			local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Refill: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		end
 
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -3982,26 +3941,24 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			local node = entry.node
 			if node.alloc and node.type == "Mastery" and node.masteryEffects and #node.masteryEffects > 0 then
 				local currentEffect = spec.masterySelections[node.id]
-				if currentEffect then
-					local baselineDamage = calcFunc({ }, false).AverageDamage or 0
-					local bestPower = 0
-					local bestEffect = currentEffect
-					for _, me in ipairs(node.masteryEffects) do
-						spec.masterySelections[node.id] = me.effect
-						spec:BuildAllDependsAndPaths()
-						local out = calcFunc({ }, false)
-						local power = (out.AverageDamage or 0) - baselineDamage
-						if power > bestPower then
-							bestPower = power
-							bestEffect = me.effect
-						end
-					end
-					if bestEffect ~= currentEffect then
-						spec.masterySelections[node.id] = bestEffect
-						masteryChanges = masteryChanges + 1
-					end
+				local baselineDamage = calcFunc({ }, false).AverageDamage or 0
+				local bestPower = 0
+				local bestEffect = currentEffect
+				for _, me in ipairs(node.masteryEffects) do
+					spec.masterySelections[node.id] = me.effect
 					spec:BuildAllDependsAndPaths()
+					local out = calcFunc({ }, false)
+					local power = (out.AverageDamage or 0) - baselineDamage
+					if power > bestPower then
+						bestPower = power
+						bestEffect = me.effect
+					end
 				end
+				if bestEffect ~= currentEffect then
+					spec.masterySelections[node.id] = bestEffect
+					masteryChanges = masteryChanges + 1
+				end
+				spec:BuildAllDependsAndPaths()
 			end
 			masteryIdx = masteryIdx + 1
 			if masteryIdx % 3 == 0 then
@@ -4019,7 +3976,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3c: Changed %d mastery effects", masteryChanges)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase3c: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 
 		-- Update currentDamage for Phase 3.5 swap optimisation
 		currentDamage = calcFunc({ }, false).AverageDamage or 0
@@ -4158,9 +4114,13 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 				-- Allocate the replacement candidate
 				local replCand = bestSwapCand.cand
-				if replCand.node.type == "Mastery" and replCand.bestEffect then
+				if replCand.node.type == "Mastery" then
 					spec:AllocNode(replCand.node)
-					spec.masterySelections[replCand.node.id] = replCand.bestEffect
+					if replCand.bestEffect then
+						spec.masterySelections[replCand.node.id] = replCand.bestEffect
+					elseif replCand.node.masteryEffects and #replCand.node.masteryEffects > 0 then
+						spec.masterySelections[replCand.node.id] = replCand.node.masteryEffects[1].effect
+					end
 				else
 					spec:AllocNode(replCand.node)
 				end
@@ -4215,7 +4175,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 3.5: %d total swaps across %d rounds", totalSwapAttempts, swapRoundsDone)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase35: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		-- ========================================================================
 		-- PHASE 4: Allocate reachable sockets (with leftover budget), then
 		-- find and insert the best jewels.
@@ -4456,7 +4415,6 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		end
 
 		-- ========================================================================
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase4: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		-- PHASE 5: Heatmap-inspired final optimisation
 		-- Scan all unallocated nodes for strong nodes missed by earlier phases.
 		-- ========================================================================
@@ -4615,13 +4573,11 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Phase 5: %d heatmap swaps", phase5Swaps)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Phase5: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		local elapsed = m_floor((os.clock() - startTime) * 10) / 10
 		self.build.autoAllocateJewelsProgress = string.format(
 			"Done: %d nodes + %d jewels optimized (%.1fs)",
 			countNormalAlloc(), socketCount, elapsed)
 		coroutine.yield()
-		local _d = io.open("debug_compare.txt", "a"); _d:write("JEWEL Final: nodes=", countNormalAlloc(), " dmg=", (calcFunc({}, false).AverageDamage or 0), "\n"); _d:close()
 		self.build.autoAllocateJewelsProgress = nil
 		self.build.autoAllocateJewelsBuilder = nil
 	end)
