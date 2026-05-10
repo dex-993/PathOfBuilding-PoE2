@@ -3352,6 +3352,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 		-- Precompute best rare jewel DPS boost for socket valuation in Phase 1
 		local bestRareJewelBoost = 0
+		local bestRareJewelItem = nil
 		local refSocketNode = nil
 		for nodeId, node in pairs(spec.nodes) do
 			if node.type == "Socket" and not node.ascendancyName and node.path then
@@ -3393,6 +3394,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 					}
 					local out = calcFunc(override, false)
 					bestRareJewelBoost = (out.AverageDamage or 0) - baselineDamage
+					bestRareJewelItem = jewel
 				end
 			end
 		end
@@ -3559,7 +3561,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 		for idx, entry in ipairs(allocated) do
 			local node = entry.node
-			if node.alloc and node.type ~= "Socket" then
+			if node.alloc then
 				-- Snapshot current state (DeallocNode cascades to dependents)
 				local allocSnapshot = { }
 				for id, n in pairs(spec.allocNodes) do
@@ -3570,13 +3572,35 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 					masterySnapshot[id] = eid
 				end
 
-				spec:DeallocNode(node)
-				spec:BuildAllDependsAndPaths()
-				local newDamage = calcFunc({ }, false).AverageDamage or 0
-				if newDamage >= currentDamage then
-					currentDamage = newDamage
+				local shouldRestore = false
+				if node.type == "Socket" and bestRareJewelItem then
+					-- Socket: evaluate with jewel override
+					local jewelOverride = {
+						repSlotName = "Jewel " .. node.id,
+						repItem = bestRareJewelItem,
+					}
+					local dmgWithJewel = (calcFunc(jewelOverride, false).AverageDamage or 0)
+					spec:DeallocNode(node)
+					spec:BuildAllDependsAndPaths()
+					local dmgWithout = (calcFunc({ }, false).AverageDamage or 0)
+					if dmgWithJewel > dmgWithout then
+						shouldRestore = true
+					else
+						currentDamage = dmgWithout
+					end
 				else
-					-- Restore full snapshot
+					-- Normal node: test if redundant
+					spec:DeallocNode(node)
+					spec:BuildAllDependsAndPaths()
+					local newDamage = calcFunc({ }, false).AverageDamage or 0
+					if newDamage >= currentDamage then
+						currentDamage = newDamage
+					else
+						shouldRestore = true
+					end
+				end
+
+				if shouldRestore then
 					for id, n in pairs(spec.allocNodes) do
 						n.alloc = false
 						spec.allocNodes[id] = nil
@@ -3797,7 +3821,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 
 				for idx, entry in ipairs(rpAllocated) do
 					local node = entry.node
-					if node.alloc and node.type ~= "Socket" then
+					if node.alloc then
 						local allocSnapshot = { }
 						for id_, n_ in pairs(spec.allocNodes) do
 							allocSnapshot[id_] = n_
@@ -3807,12 +3831,33 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 							masterySnapshot[id_] = eid_
 						end
 
-						spec:DeallocNode(node)
-						spec:BuildAllDependsAndPaths()
-						local newDamage = calcFunc({ }, false).AverageDamage or 0
-						if newDamage >= currentDamage then
-							currentDamage = newDamage
+						local shouldRestore = false
+						if node.type == "Socket" and bestRareJewelItem then
+							local jewelOverride = {
+								repSlotName = "Jewel " .. node.id,
+								repItem = bestRareJewelItem,
+							}
+							local dmgWithJewel = (calcFunc(jewelOverride, false).AverageDamage or 0)
+							spec:DeallocNode(node)
+							spec:BuildAllDependsAndPaths()
+							local dmgWithout = (calcFunc({ }, false).AverageDamage or 0)
+							if dmgWithJewel > dmgWithout then
+								shouldRestore = true
+							else
+								currentDamage = dmgWithout
+							end
 						else
+							spec:DeallocNode(node)
+							spec:BuildAllDependsAndPaths()
+							local newDamage = calcFunc({ }, false).AverageDamage or 0
+							if newDamage >= currentDamage then
+								currentDamage = newDamage
+							else
+								shouldRestore = true
+							end
+						end
+
+						if shouldRestore then
 							for id_, n_ in pairs(spec.allocNodes) do
 								n_.alloc = false
 								spec.allocNodes[id_] = nil
@@ -3858,7 +3903,7 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 			for idx = #allocated, 1, -1 do
 				local entry = allocated[idx]
 				local node = entry.node
-				if node.alloc and node.type ~= "Socket" then
+				if node.alloc then
 					local allocSnapshot = { }
 					for id_, n_ in pairs(spec.allocNodes) do
 						allocSnapshot[id_] = n_
@@ -3868,16 +3913,37 @@ function TreeTabClass:AutoAllocateJewelsConfirmed(candidateCount)
 						masterySnapshot[id_] = eid_
 					end
 
-					spec:DeallocNode(node)
-					spec:BuildAllDependsAndPaths()
-					local newDamage = calcFunc({ }, false).AverageDamage or 0
-					if newDamage >= cascadeDamage then
-						cascadeDamage = newDamage
+					local shouldRemove = false
+					if node.type == "Socket" and bestRareJewelItem then
+						local jewelOverride = {
+							repSlotName = "Jewel " .. node.id,
+							repItem = bestRareJewelItem,
+						}
+						local dmgWithJewel = (calcFunc(jewelOverride, false).AverageDamage or 0)
+						spec:DeallocNode(node)
+						spec:BuildAllDependsAndPaths()
+						local dmgWithout = (calcFunc({ }, false).AverageDamage or 0)
+						if dmgWithJewel > dmgWithout then
+							shouldRemove = false
+						else
+							shouldRemove = true
+							cascadeDamage = dmgWithout
+						end
+					else
+						spec:DeallocNode(node)
+						spec:BuildAllDependsAndPaths()
+						local newDamage = calcFunc({ }, false).AverageDamage or 0
+						if newDamage >= cascadeDamage then
+							cascadeDamage = newDamage
+							shouldRemove = true
+						end
+					end
+
+					if shouldRemove then
 						t_remove(allocated, idx)
 						cascadeRemoved = cascadeRemoved + 1
 						cascadeChanged = true
 					else
-						-- Restore full snapshot
 						for id_, n_ in pairs(spec.allocNodes) do
 							n_.alloc = false
 							spec.allocNodes[id_] = nil
